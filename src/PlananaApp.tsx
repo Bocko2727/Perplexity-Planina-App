@@ -22,6 +22,10 @@ import { todayISO, fmtKm, fmtM, fmtLoss } from "./lib/utils";
 import { storageAdapter } from "./lib/storage";
 import { almanacToCommon, inferKind, flattenResearch, mergeRouteData, normalizeImportedRoute } from "./lib/route-helpers";
 import { buildMarkdownForDetailed, buildMarkdownForAlmanac, buildMarkdownForCustom } from "./lib/markdown";
+import { DifficultyBadge } from "./components/ui/DifficultyBadge";
+import { StatCard } from "./components/ui/StatCard";
+import { SectionTitle } from "./components/ui/SectionTitle";
+import { ModalShell } from "./components/ui/ModalShell";
 
 /* =========================================================================
    DETAILED_ROUTES — двата напълно разписани прехода от PDF-ите
@@ -4136,42 +4140,6 @@ const ALMANAC = {
 };
 
 /* =========================================================================
-   Small shared UI atoms
-   ========================================================================= */
-function DifficultyBadge({ difficulty }) {
-  const s = diffStyle(difficulty);
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${s.bg} ${s.text}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
-      {difficulty}
-    </span>
-  );
-}
-
-function StatCard({ icon: Icon, label, value, accent }: any) {
-  return (
-    <div className="bg-white rounded-xl border border-stone-200 p-4 flex items-center gap-3 shadow-sm">
-      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${accent || "bg-emerald-50 text-emerald-700"}`}>
-        <Icon size={20} />
-      </div>
-      <div className="min-w-0">
-        <div className="text-[11px] uppercase tracking-wide text-stone-400 font-bold">{label}</div>
-        <div className="text-lg font-bold text-stone-800 truncate">{value}</div>
-      </div>
-    </div>
-  );
-}
-
-function SectionTitle({ icon: Icon, children }) {
-  return (
-    <h3 className="flex items-center gap-2 text-sm font-bold text-stone-700 uppercase tracking-wide mb-3">
-      {Icon && <Icon size={16} className="text-emerald-600" />}
-      {children}
-    </h3>
-  );
-}
-
-/* =========================================================================
    Sidebar
    ========================================================================= */
 function Sidebar({
@@ -5056,36 +5024,6 @@ function CustomRouteView({ route, onDelete, onExportMarkdown, copied, notes, set
             {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Копирано!" : "Експорт в Markdown"}
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/* =========================================================================
-   Modal shell
-   ========================================================================= */
-function ModalShell({ title, icon: Icon, onClose, children, wide }: any) {
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleEsc);
-    return () => document.removeEventListener("keydown", handleEsc);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
-      <div
-        className={`bg-white rounded-2xl shadow-2xl w-full ${wide ? "max-w-2xl" : "max-w-md"} max-h-[85vh] overflow-y-auto`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 p-4 border-b border-stone-200 sticky top-0 bg-white z-10">
-          {Icon && <Icon size={18} className="text-emerald-600" />}
-          <h2 className="font-bold text-stone-800 flex-1">{title}</h2>
-          <button onClick={onClose} aria-label="Затвори" className="w-8 h-8 rounded-full hover:bg-stone-100 flex items-center justify-center text-stone-400">
-            <X size={18} />
-          </button>
-        </div>
-        <div className="p-5">{children}</div>
       </div>
     </div>
   );
