@@ -1,0 +1,6342 @@
+import { useState, useMemo, useCallback, useEffect, useRef, Component, type ReactNode } from "react";
+import {
+  Mountain, Search, ChevronDown, ChevronRight, MapPin, Phone, TriangleAlert,
+  CircleCheckBig, Circle, Car, Bus, TrainFront, Heart, HeartOff, Plus, X, Copy,
+  Check, Trash2, Calendar, Clock, TrendingUp, TrendingDown, Ruler, Gauge,
+  Cloud, Shield, Backpack, StickyNote, User, Siren, Menu, Filter, ArrowUpDown,
+  Home, Hotel, Ticket, ExternalLink, Star, Award, Sunrise
+} from "lucide-react";
+
+/* =========================================================================
+   ПЛАНИНА (PLANINA) — Планировчик на планински преходи в България
+   Production build — single-file React SPA
+   ========================================================================= */
+
+/* ---------- Types ---------- */
+type Difficulty = "Лесна" | "Лесен" | "Лесна/Средна" | "Средна" | "Среден" | "Средна/Висока" | "Висока" | "Екстремна";
+type RouteKind = "detailed" | "almanac" | "custom";
+
+interface Hut {
+  name: string;
+  elevation?: number | null;
+  beds?: number | null;
+  officialSource?: string;
+  officialPhone?: string;
+  altPhone?: string;
+  email?: string;
+  contactName?: string;
+  gps?: string;
+  verified?: boolean;
+  conflict?: string | null;
+  staleNumbers?: string;
+  phone?: string;
+}
+
+interface RiskAssessment {
+  level: string;
+  color: "emerald" | "amber" | "rose";
+  points: string[];
+  conclusion?: string;
+}
+
+interface TransportStep {
+  from: string;
+  to: string;
+  mode: string;
+  time: string;
+  note: string;
+}
+
+interface Transport {
+  summary?: string;
+  car?: { available: boolean; text: string; parkingNote?: string };
+  public?: { steps: TransportStep[] };
+  taxis?: Array<{ name: string; phone: string; note: string }>;
+}
+
+interface DayPlan {
+  date: string;
+  label: string;
+  type: string;
+  distance: string;
+  gain: string;
+  time: string;
+  stay: string;
+  difficulty: string;
+}
+
+interface Accommodation {
+  name: string;
+  location: string;
+  rating: string | null;
+  price: string | null;
+  note: string;
+}
+
+interface DetailedRoute {
+  id: string;
+  kind: "detailed";
+  name: string;
+  region: string;
+  status: string;
+  difficulty: string;
+  distanceKm: number | null;
+  gainM: number | null;
+  lossM: number | null;
+  dateStart: string;
+  dateEnd: string;
+  from: string;
+  to: string;
+  season: string;
+  forecastLink: string;
+  busLink: string;
+  bdzLink: string;
+  avtogariLink: string;
+  routeLine: string;
+  verificationLevel: string;
+  transport: Transport;
+  huts: Hut[];
+  risk: RiskAssessment | null;
+  days: DayPlan[];
+  accommodation: Accommodation[];
+  taxis: Array<{ name: string; phone: string; note: string }>;
+  windyEmbed: string;
+  notesDefault: string;
+}
+
+interface AlmanacRoute {
+  id: string;
+  name: string;
+  region: string;
+  distanceKm: number;
+  gainM: number;
+  lossM: number;
+  difficulty: string;
+  hutName: string;
+  hutPhone: string;
+  day1: string;
+  day2: string;
+  back: string;
+  verified: boolean;
+  suitedFor?: string;
+  fridayNight?: string;
+  terrain?: string;
+  kmNote?: string;
+  assessment?: string;
+  practicalRank?: number;
+}
+
+interface CustomRoute {
+  id: string;
+  kind: "custom";
+  name: string;
+  region: string;
+  distanceKm: number | null;
+  gainM: number | null;
+  difficulty: string;
+  transportNote: string;
+  risks: string;
+  huts: Array<{ name: string; phone: string }>;
+  days: Array<{ text: string }>;
+}
+
+interface CompletedInfo {
+  date: string;
+  note: string;
+}
+
+interface BackupPayload {
+  schemaVersion: number;
+  exportedAt: string;
+  overrides: Record<string, any>;
+  importedRoutes: any[];
+  customRoutes: CustomRoute[];
+  favorites: string[];
+  completed: Record<string, CompletedInfo>;
+  notes: Record<string, string>;
+  gearState: Record<string, Record<string, boolean>>;
+  hutVerification: Record<string, boolean>;
+}
+
+/* ---------- Storage adapter ----------
+   Abstracts persistence: uses window.storage (Perplexity env) if available,
+   falls back to localStorage for Netlify/Vercel deployments. */
+interface StorageAdapter {
+  get(key: string, global: boolean): Promise<{ value: string } | null>;
+  set(key: string, value: string, global: boolean): Promise<void>;
+}
+
+const storageAdapter: StorageAdapter = {
+  async get(key: string, _global: boolean) {
+    if (typeof window !== "undefined" && (window as any).storage) {
+      return (window as any).storage.get(key, _global);
+    }
+    if (typeof window !== "undefined" && window.localStorage) {
+      const v = window.localStorage.getItem(key);
+      return v ? { value: v } : null;
+    }
+    return null;
+  },
+  async set(key: string, value: string, _global: boolean) {
+    if (typeof window !== "undefined" && (window as any).storage) {
+      return (window as any).storage.set(key, value, _global);
+    }
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  },
+};
+
+/* ---------- Difficulty visual config ---------- */
+const DIFFICULTY_STYLES = {
+  "Лесна": { bg: "bg-emerald-100", text: "text-emerald-800", dot: "bg-emerald-500", ring: "ring-emerald-300" },
+  "Лесна/Средна": { bg: "bg-emerald-100", text: "text-emerald-800", dot: "bg-emerald-500", ring: "ring-emerald-300" },
+  "Лесен": { bg: "bg-emerald-100", text: "text-emerald-800", dot: "bg-emerald-500", ring: "ring-emerald-300" },
+  "Средна": { bg: "bg-amber-100", text: "text-amber-800", dot: "bg-amber-500", ring: "ring-amber-300" },
+  "Среден": { bg: "bg-amber-100", text: "text-amber-800", dot: "bg-amber-500", ring: "ring-amber-300" },
+  "Средна/Висока": { bg: "bg-orange-100", text: "text-orange-800", dot: "bg-orange-500", ring: "ring-orange-300" },
+  "Висока": { bg: "bg-rose-100", text: "text-rose-800", dot: "bg-rose-500", ring: "ring-rose-300" },
+  "Екстремна": { bg: "bg-purple-100", text: "text-purple-800", dot: "bg-purple-600", ring: "ring-purple-300" },
+};
+const diffStyle = (d) => DIFFICULTY_STYLES[d] || DIFFICULTY_STYLES["Средна"];
+
+/* ---------- Gear checklists by difficulty tier ---------- */
+const GEAR_LISTS = {
+  base: ["Туристически обувки", "Раница 30-40л", "Вода (мин. 2л)", "Дъждобран/яке", "Слънцезащитен крем", "Карта/GPS трак (офлайн)", "Зарядно/powerbank", "Аптечка"],
+  "Средна": ["Трекингови щеки", "Втори топъл слой", "Челник", "Гамаши"],
+  "Средна/Висока": ["Трекингови щеки", "Втори топъл слой", "Челник", "Гамаши", "Каска (при камънопад)"],
+  "Висока": ["Трекингови щеки", "Каска", "Челник + резервни батерии", "Термо бельо", "Авариен бивак чувал", "GPS устройство (не само телефон)"],
+  "Екстремна": ["Каска", "Виа-ферата комплект/сбруя", "Термо бельо", "Авариен бивак чувал", "GPS устройство", "Втори човек в екипа задължително"],
+};
+function gearListFor(difficulty) {
+  const tier = GEAR_LISTS[difficulty] || [];
+  return [...GEAR_LISTS.base, ...tier];
+}
+
+/* ---------- Emergency contacts (static reference) ---------- */
+const EMERGENCY = {
+  national: "112",
+  pss: "1470",
+  pssAlt: "02 963 2000",
+  pssInfo: "1471",
+  pssEmail: "pss@redcross.bg",
+  pssGsm: "0887 100 237",
+  steps: [
+    "Запази спокойствие и провери за наранявания в групата.",
+    "Обади се на 112 или 1470 (ПСС) — кажи местоположение, брой хора, естество на инцидента.",
+    "Ако имаш инсталирано приложението на ПСС, изпрати координати през него.",
+    "Не се разделяй от групата, освен ако не е абсолютно наложително.",
+    "Търси естествено или изкуствено укритие от вятър и валежи.",
+    "Пести батерията на телефона — изгаси излишни приложения.",
+    "Ако имаш GPS трак, сподели последна известна точка с спасителите.",
+  ],
+};
+
+/* =========================================================================
+   DETAILED_ROUTES — двата напълно разписани прехода от PDF-ите
+   ========================================================================= */
+const DETAILED_ROUTES = [
+  {
+    id: "belmeken",
+    kind: "detailed",
+    name: "Белмекен – Юндола – Велинград",
+    region: "Рила (юг) / граница с Родопите",
+    status: "Идея",
+    difficulty: "Среден",
+    distanceKm: 30,
+    gainM: 1250,
+    lossM: 950,
+    dateStart: "2026-08-08",
+    dateEnd: "2026-08-09",
+    from: "Костенец",
+    to: "Велинград",
+    season: "Юни – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+velingrad",
+    busLink: "https://www.busexpress.bg/en/destination/kostenets/velingrad",
+    bdzLink: "https://razpisanie.bdz.bg/bg/kostenets/velingrad",
+    avtogariLink: "https://avtogari.info/search.php?start=Костенец&end=Велинград",
+    routeLine: "Костенец (влак) → х. Белмекен, яз. Белмекен → х. Христо Смирненски → Юндола",
+    verificationLevel: "ДОБРО — потвърден в туристически форум (bulgarian-mountains.com) с точно тази последователност от хижи.",
+    transport: {
+      summary: "Влак в двата края (София↔Костенец, Юндола-теснолинейка↔Велинград) — най-удобният вариант транспортно. До х. Христо Смирненски се стига и с кола по асфалт.",
+      car: {
+        available: true,
+        text: "До х. Христо Смирненски се стига с кола по асфалтиран път — възможно е такси вместо пешеходната част на ден 2, ако искаш да скъсиш времето.",
+        parkingNote: "Паркинг при хижата; провери проходимост на последните км при дъждовно време.",
+      },
+      public: {
+        steps: [
+          { from: "София/Пловдив", to: "Костенец", mode: "Влак (главна линия)", time: "чест / ~1-1.5ч", note: "Костенец е на основната жп линия — лесен достъп." },
+          { from: "Юндола", to: "Велинград", mode: "Теснолинейка Септември–Велинград–Добринище или автобус", time: "по разписание", note: "Провери час в БДЖ преди тръгване." },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Белмекен",
+        elevation: 2208,
+        beds: 39,
+        officialSource: "БТС официално (btsbg.org, одит 09.07.2026)",
+        officialPhone: "0879 461899",
+        altPhone: "0889 798 586",
+        gps: "42.1930, 23.7495",
+        verified: true,
+        conflict: "⚠️ РАЗЛИЧАВА СЕ — официалният БТС номер (0879 461899) се разминава с форумния (0889 798 586), както и капацитетът/височината (39 vs 65 места). Обади се на двата преди датата.",
+      },
+      {
+        name: "х. Христо Смирненски",
+        elevation: 1758,
+        beds: 60,
+        officialSource: "БТС официално",
+        officialPhone: "0877 33 29 69",
+        email: "smirnenskihut@gmail.com",
+        gps: "42.1066, 23.7935",
+        verified: true,
+        conflict: null,
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: Ден 1 (Костенец→х. Белмекен) е най-рисковата част — документиран случай на изгубване (5ч30мин станали 11ч). Задължително следвай р. Крайна и се обади на хижаря преди тръгване.",
+        "Транспорт: Добре — влак в двата края, най-удобният вариант от всички нови маршрути.",
+        "Хижи: Телефоните на Белмекен и Христо Смирненски са потвърдени от 2+ независими извора, но с разминаване за Белмекен (виж таблицата с хижи).",
+        "Километри/денивелация: Среден риск за ден 1 — цифрите са оценка (13-16 км, 1000-1450 м), не точен GPX трак. Провери в OsmAnd/bgmountains преди датата.",
+      ],
+      conclusion: "Най-сигурният транспортно от новите маршрути (влак-влак), но ден 1 изисква внимание към ориентирането и предварителен съвет от хижаря.",
+    },
+    days: [
+      { date: "Съб. 08.08", label: "София → Костенец", type: "Транспорт", distance: "70 км с влак", gain: "–", time: "1-1.5ч", stay: "–", difficulty: "–" },
+      { date: "Съб. 08.08", label: "Костенец → х. Белмекен", type: "Преход", distance: "13-16 км (оценка)", gain: "1000-1450м (оценка)", time: "5-6ч", stay: "х. Белмекен", difficulty: "Среден" },
+      { date: "Нед. 09.08", label: "х. Белмекен → яз. Белмекен", type: "Преход (кратък спуск)", distance: "1-2 км", gain: "-15-20 мин слизане", time: "15-20мин", stay: "–", difficulty: "Лесен" },
+      { date: "Нед. 09.08", label: "Яз. Белмекен → х. Хр. Смирненски → Юндола", type: "Преход", distance: "16 км", gain: "+50м / -900м", time: "4.5ч", stay: "–", difficulty: "Лесен" },
+      { date: "Нед. 09.08", label: "Юндола → Велинград", type: "Транспорт", distance: "25 км", gain: "–", time: "по разписание (теснолинейка/автобус)", stay: "–", difficulty: "–" },
+    ],
+    accommodation: [],
+    taxis: [],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.0500&lon=23.7500",
+    notesDefault: "⚠️ Задължително обади се на хижаря на х. Белмекен преди тръгване и потвърди актуалното състояние на маркировката за ден 1.",
+  },
+  {
+    id: "rodopi-orfey",
+    kind: "detailed",
+    name: "Родопи: връх Орфей (+ Каньонът на водопадите)",
+    region: "Родопи (Смолян)",
+    status: "Планиран",
+    difficulty: "Лесен",
+    distanceKm: 19.5,
+    gainM: 729,
+    lossM: 715,
+    dateStart: "2026-08-01",
+    dateEnd: "2026-08-02",
+    from: "София",
+    to: "Смолян",
+    season: "Юни – Октомври (сняг по билото до май)",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+smolyan",
+    busLink: "https://www.busexpress.bg/en/destination/sofia/smolyan",
+    bdzLink: "https://razpisanie.bdz.bg/bg/sofia/smolyan",
+    avtogariLink: "https://avtogari.info/search.php?start=София&end=Смолян",
+    routeLine: "Каньонът на водопадите (кръгов) – Смолян, Връх Орфей (от параклис след х. Перелик, отиване-връщане)",
+    verificationLevel: "Денивелацията е верифицирана от 2 реални измервания (240м и 280м). Пътят до параклиса потвърден проходим с лека кола от 3+ независими извора.",
+    transport: {
+      summary: "Лична кола София↔Смолян (~260 км, ~4-4.5ч). Пътят до х. Перелик/параклиса е проходим с ВСЯКАКВА лека кола — 4x4 не е нужен.",
+      car: {
+        available: true,
+        text: "Път до параклиса (1.2 км след х. Перелик): проходим с всякакъв тип лека кола, потвърдено от 3 независими извора (bulgarian-mountains.com, TripJournal, IzBulgaria). Алтернативен маршрут: отбивка Превала (по пътя Смолян–Девин) → 5-6 км до хижата, възможно по-къс от варианта през Стойките.",
+        parkingNote: "⚠️ На паркинга при канйона има хора с джипове, които твърдят, че информационният център е далеч (искат 20 лв превоз) — всъщност е ~15 мин пеша, спести парите.",
+      },
+      public: {
+        steps: [
+          { from: "София", to: "Смолян/Езерово", mode: "Автобус", time: "~4-4.5ч", note: "С кола таксито става излишно — виж таксиметрова таблица по-долу само ако пътуваш без кола." },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Перелик",
+        elevation: 1969,
+        beds: 35,
+        officialSource: "ПОТВЪРДЕНО от БТС (одит 09.07.2026)",
+        officialPhone: "0988 800 850",
+        contactName: "Илия Чернев (председател ТД „Перелик“ – Широка лъка)",
+        altPhone: "0886 675 111 (Янко Пелтеков, за контакти)",
+        gps: "41.610195, 24.596352",
+        verified: true,
+        conflict: null,
+        staleNumbers: "Старите номера (0886 752 111 / 0889 371 409) са устарели — не са в официалния БТС профил.",
+      },
+    ],
+    taxis: [
+      { name: "Експрес такси", phone: "0301 6147", note: "Обслужва изрично Смолян, с. Стойките, Широка лъка, Чепеларе, Пампорово — най-вероятният кандидат." },
+      { name: "Хит такси", phone: "0878 166 161 / 0886 668 866", note: "–" },
+      { name: "Такси 1 Плюс", phone: "0301 6188", note: "–" },
+      { name: "Радиотакси", phone: "0301 35059", note: "–" },
+      { name: "Узунов Трансгруп", phone: "0301 82647", note: "–" },
+    ],
+    risk: {
+      level: "НИСЪК",
+      color: "emerald",
+      points: [
+        "Терен: оценен от местни като „най-лекият от всички родопски първенци и най-маркираният“. Нетото покачване параклис→връх е само +188м, реалното кумулативно е по-голямо заради подсичане на Малък Перелик и Шабалиева Каба.",
+        "Сезонност: комент от май 2026 — по склоновете на Голям Перелик все още имало сняг (метър преспи на места). Извън планирания период, но провери свежи отзиви близо до датата.",
+        "Паркинг измами: на паркинга при канйона има хора с джипове, предлагащи ненужен превоз до информационния център (~15 мин пеша).",
+        "Данни за денивелация: верифицирани от 2 реални измервания (240м и 280м), средна стойност 265м.",
+      ],
+      conclusion: "Най-лекият и най-сигурен от планираните преходи — основното внимание е към сезонния сняг по билото и паркинг измамите.",
+    },
+    days: [
+      { date: "Съб. 01.08", label: "София → Смолян/Езерово", type: "Транспорт", distance: "260 км с кола", gain: "–", time: "4-4.5ч", stay: "х. Кристал, Езерово", difficulty: "–" },
+      { date: "Съб. 01.08", label: "Каньонът на водопадите (кръгов)", type: "Преход", distance: "кръгов, 4 етапа", gain: "не е дадено", time: "3ч", stay: "х. Кристал, Езерово", difficulty: "Лесен" },
+      { date: "Нед. 02.08", label: "Параклис (след х. Перелик) → връх Орфей → обратно", type: "Преход", distance: "~13 км (туристическа оценка)", gain: "265м всяка посока", time: "5ч с почивки", stay: "–", difficulty: "Лесен" },
+      { date: "Нед. 02.08", label: "Смолян/Езерово → София", type: "Транспорт", distance: "260 км с кола", gain: "–", time: "4-4.5ч", stay: "–", difficulty: "–" },
+    ],
+    accommodation: [
+      { name: "Семеен хотел Кристал", location: "кв. Езерово, на брега на Керянов гьол", rating: "8.4 (Booking)", price: "80 лв двойна стая", note: "Гледка към скала Невястата; за вечеря наблизо — ресторант Рибката." },
+      { name: "Хотел Кипарис Алфа", location: "центъра на Смолян", rating: "9.1 (Booking)", price: "120 лв двойна със закуска", note: "По-скъп, но топ локация." },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=41.6100&lon=24.5960",
+    notesDefault: "💡 Извор на река Арда е ~35 км в обратна посока — не е включен в плана, защото не се съчетава лесно с връх Орфей в един уикенд.",
+  },
+  {
+    id: "bezbog-popovo-ezero",
+    kind: "detailed",
+    name: "Хижа „Безбог“ – Попово езеро",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Лесна",
+    distanceKm: 7.4,
+    gainM: 223,
+    lossM: 214,
+    dateStart: "",
+    dateEnd: "",
+    from: "Добринище",
+    to: "Добринище",
+    season: "Юни – Октомври (лифтът работи целогодишно, зимата — само с опит и разрешителни за НП Пирин)",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+bezbog",
+    busLink: "https://www.virail.bg/avtobus-dobrinische-bansko",
+    bdzLink: "",
+    avtogariLink: "https://avtogari.info/search.php?start=София&end=Добринище",
+    routeLine: "Добринище (лифт) → х. Гоце Делчев → х. Безбог → Безбожко езеро → Попово езеро → обратно",
+    verificationLevel: "СРЕДНО — разстоянието/денивелацията са от еднопосочен туристически справочник (planinka.bg), не от GPX трак. Телефонът на хижата се разминава между източниците (виж huts.conflict).",
+    transport: {
+      summary: "Без директен път за кола до самата хижа — задължителен седалков лифт от Добринище до х. Гоце Делчев, оттам пеша до х. Безбог.",
+      car: {
+        available: false,
+        text: "Кола стига само до долната лифтова станция в Добринище. Оттам няма алтернатива на лифта или дълъг пешеходен подход.",
+        parkingNote: "Паркинг при долната станция — безплатен, но неохраняван. Форумни отзиви (bulgarian-mountains.com) съобщават, че оставяне на кола за 4-5 дни е било безопасно, но това не е гаранция.",
+      },
+      public: {
+        steps: [
+          { from: "Банско", to: "Добринище", mode: "Автобус (Union Ivkoni / Struma 11)", time: "15-20 мин, чести курсове 08:30-19:48ч", note: "Провери актуално разписание преди тръгване." },
+          { from: "Добринище", to: "х. Гоце Делчев", mode: "Седалков лифт", time: "27 мин, 3245м, работи 08:30-17:00ч (посл. качване 16:45ч)", note: "12 лв еднопосочно / 18 лв двупосочно (цени 2020г. — провери актуални)." },
+          { from: "х. Гоце Делчев", to: "х. Безбог", mode: "Пеша", time: "~30-40 мин", note: "Кратък и лек преход между двете хижи." },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Безбог",
+        elevation: 2240,
+        beds: null,
+        officialSource: "explorebg.com",
+        officialPhone: "+359 74 472120",
+        altPhone: "0888 286 102",
+        gps: "41.733889, 23.524167",
+        verified: true,
+        conflict: "⚠️ Двата телефона идват от различни източници (explorebg.com срещу предишен запис в базата) — обади се на explorebg номера първо и провери и двата преди датата.",
+      },
+    ],
+    risk: {
+      level: "НИСЪК",
+      color: "emerald",
+      points: [
+        "Терен: оценен като 2/6 (лесно) — широка, добре маркирана зелена пътека, с кратки каменисти участъци.",
+        "Логистика: единственият достъп е лифтът — провери работното време и последно качване (16:45ч) преди да планираш деня.",
+        "Вода: няма чешми по пътеката — носи поне 1.5л на човек.",
+        "Данни: разстоянието/денивелацията са от единичен източник (planinka.bg), не от верифициран GPX — третирай ги като добра, но не абсолютна оценка.",
+      ],
+      conclusion: "Най-лекият от трите нови маршрута — основното внимание е към часовете на лифта, не към самия терен.",
+    },
+    days: [
+      { date: "Ден 1", label: "Добринище → лифт → х. Гоце Делчев → х. Безбог", type: "Транспорт + кратък преход", distance: "лифт 3.2км + пеша ~1км", gain: "737м (лифт) + малко пеша", time: "27 мин лифт + 30-40 мин пеша", stay: "х. Безбог", difficulty: "Лесен" },
+      { date: "Ден 2", label: "х. Безбог → Попово езеро → обратно → лифт надолу", type: "Преход", distance: "7.4 км (там и обратно)", gain: "223м / -214м", time: "~2ч40мин ходене + почивки", stay: "–", difficulty: "Лесен" },
+    ],
+    accommodation: [
+      { name: "х. Безбог", location: "на място, 2240м н.в.", rating: null, price: null, note: "Основна нощувка на маршрута — резервирай предварително по телефон." },
+    ],
+    taxis: [],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=11&overlay=rain&product=ecmwf&level=surface&lat=41.7339&lon=23.5242",
+    notesDefault: "⚠️ Обади се на хижа Безбог (+359 74 472120) преди тръгване, за да провериш разписанието на лифта и наличността на места.",
+  },
+  {
+    id: "bezbog-tevno-ezero",
+    kind: "detailed",
+    name: "Хижа „Безбог“ – заслон „Тевно езеро“",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Средна",
+    distanceKm: 15.4,
+    gainM: 370,
+    lossM: 370,
+    dateStart: "",
+    dateEnd: "",
+    from: "Добринище",
+    to: "Добринище",
+    season: "Юни – Октомври. Зимата — само с опит, лавинен риск при директно изкачване през Кралевдворска порта.",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+tevno+ezero",
+    busLink: "https://www.virail.bg/avtobus-dobrinische-bansko",
+    bdzLink: "",
+    avtogariLink: "https://avtogari.info/search.php?start=София&end=Добринище",
+    routeLine: "х. Безбог → езеро Безбог → „Душевадката“ → Попово езеро → Кралевдворска порта → заслон Тевно езеро → обратно",
+    verificationLevel: "СРЕДНО — разстояние/време от туристически блог (svetogled.com), не от GPX трак. GPS координати на заслона потвърдени от 2 независими източника (360mag.bg, БТС).",
+    transport: {
+      summary: "Същият лифтов достъп както за Попово езеро (Добринище → х. Гоце Делчев → х. Безбог), но с по-дълъг и по-сериозен преход след хижата.",
+      car: {
+        available: false,
+        text: "Без директен път — задължителен лифт до х. Гоце Делчев, оттам пеша.",
+        parkingNote: "Виж бележката за паркинг при маршрута до Попово езеро (същата долна станция).",
+      },
+      public: {
+        steps: [
+          { from: "Банско", to: "Добринище", mode: "Автобус", time: "15-20 мин", note: "Провери актуално разписание." },
+          { from: "Добринище", to: "х. Гоце Делчев", mode: "Седалков лифт", time: "27 мин, посл. качване 16:45ч", note: "~20 лв двупосочно (провери актуална цена)." },
+          { from: "х. Гоце Делчев", to: "х. Безбог", mode: "Пеша", time: "~30-40 мин", note: "Общ старт с маршрута до Попово езеро." },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "заслон Тевно езеро",
+        elevation: 2510,
+        beds: 35,
+        officialSource: "БТС + 360mag.bg",
+        officialPhone: "+359 886 397268",
+        altPhone: null,
+        gps: "41.6989, 23.4828",
+        verified: true,
+        conflict: "БТС и 360mag.bg се съгласуват за телефона — по-надежден от предишния placeholder номер в базата. Капацитетът (30-40 места) е приблизителен от неофициален източник.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: Кралевдворска порта е последната камениста част преди заслона — изисква внимание, особено при мокро/студено време.",
+        "Зимен риск: лавинна опасност при директно изкачване през портата — предпочита се северен ръб през Валявишките езера, но изисква опит и екипировка.",
+        "Вода: няма чешми по маршрута — носи поне 1.5л на човек.",
+        "Данни: разстояние/време от единичен блог източник, не GPX верифицирано — третирай като добра приблизителна оценка.",
+        "Логистика: зависимост от часовете на лифта (посл. качване 16:45ч) — планирай ранен старт, ако искаш връщане същия ден.",
+      ],
+      conclusion: "По-сериозен от маршрута до Попово езеро заради Кралевдворска порта, но напълно управляем лятото с добра подготовка. Зиме — само за опитни с лавинна преценка.",
+    },
+    days: [
+      { date: "Ден 1", label: "Добринище → лифт → х. Гоце Делчев → х. Безбог", type: "Транспорт + кратък преход", distance: "лифт 3.2км + пеша ~1км", gain: "737м (лифт)", time: "27 мин лифт + 30-40 мин пеша", stay: "х. Безбог", difficulty: "Лесен" },
+      { date: "Ден 2", label: "х. Безбог → заслон Тевно езеро → обратно", type: "Преход", distance: "15.4 км (там и обратно)", gain: "370м / -370м", time: "3ч30мин без почивки едната посока (~7ч общо)", stay: "заслон Тевно езеро (или връщане същия ден)", difficulty: "Среден" },
+    ],
+    accommodation: [
+      { name: "х. Безбог", location: "старт на прехода, 2240м н.в.", rating: null, price: null, note: "Нощувка преди тръгване към заслона." },
+      { name: "заслон Тевно езеро", location: "крайна точка, 2510м н.в.", rating: null, price: null, note: "Кухня, столова, електричество от собствена ВЕЦ. Обади се предварително за наличност на места." },
+    ],
+    taxis: [],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=11&overlay=rain&product=ecmwf&level=surface&lat=41.6989&lon=23.4828",
+    notesDefault: "⚠️ Зиме: лавинна опасност при директно изкачване през Кралевдворска порта — предпочети северния ръб през Валявишките езера и провери с ПСС преди тръгване.",
+  },
+  {
+    id: "izvora-gotsev-vrah",
+    kind: "detailed",
+    name: "Хижа „Извора“ – Гоцев връх",
+    region: "Осогово и Средна гора",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: null,
+    gainM: 1000,
+    lossM: 1000,
+    dateStart: "",
+    dateEnd: "",
+    from: "с. Петрово",
+    to: "с. Петрово",
+    season: "Целогодишно достъпна хижа (отопление, ток), но изкачването към върха най-добре Май-Октомври.",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+slavyanka",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "https://avtogari.info/search.php?start=София&end=Сандански",
+    routeLine: "с. Петрово или с. Голешево → х. Извора → синя маркировка → връх Гоцев (2212м) → обратно",
+    verificationLevel: "⚠️ ВНИМАНИЕ ЗА РЕГИОН: планина Славянка не е сред петте текущи региона в приложението — временно сложена в „Осогово и Средна гора“ по указание, докато не се добави отделен регион. ГЕОГРАФСКИ Извора/Гоцев връх НЕ Е в Средна гора. Разстоянието до върха не е потвърдено в нито един източник — само денивелацията (900-1100м) е приблизително оценена. Нужна е допълнителна проверка (GPX или обаждане на хижата) преди да разчиташ на тези числа.",
+    transport: {
+      summary: "Три възможни подхода към хижата — от Петрово (най-лесен, асфалт), Голешево (асфалт+местна пътека), или Парил (традиционен, но по-лош път). Личен автомобил е практичен вариант за първите два.",
+      car: {
+        available: true,
+        text: "От с. Петрово: 6км, почти изцяло асфалт, лесно достъпен с всякаква кола. От с. Голешево: ~8км, асфалт до кръстовище, после локална пътека. От с. Парил: 15-16км по третокласен междуселски път — препоръчва се 4x4 или обществен транспорт до Петрово с продължение пеша.",
+        parkingNote: "Не е потвърдено конкретно място за паркиране при хижата в намерените източници — провери по телефона преди тръгване.",
+      },
+      public: {
+        steps: [
+          { from: "София/Сандански", to: "с. Петрово", mode: "Автобус/маршрутка (общ. Сандански)", time: "неуточнено", note: "Провери разписание на местните превозвачи — не е намерено онлайн разписание в изследването." },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Извора",
+        elevation: 704,
+        beds: 50,
+        officialSource: "360mag.bg / izvora.hija.bg",
+        officialPhone: "+359 88 296 6372",
+        altPhone: "+359 89 920 9077",
+        gps: "41.414077, 23.557324",
+        verified: true,
+        conflict: "Множество телефони се появяват в различни източници (+359 74 322287, +359 89 920 9977) — обади се на основния номер първо и провери актуалността на останалите.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: 900-1100м денивелация до връх Гоцев (2212м) — сериозно изкачване, но точното разстояние не е потвърдено в нито един източник.",
+        "Достъп до хижата: пътят от Парил е в по-лошо състояние, особено след дъжд — предпочитай Петрово или Голешево с лична кола.",
+        "Данни: това е напълно нов маршрут за базата — няма верифициран GPX, форумни отзиви за самия преход до върха, или сезонни предупреждения. Трябва допълнително проучване преди да разчиташ изцяло на тези числа.",
+        "Регион: временно категоризиран в „Осогово и Средна гора“ — географски принадлежи на Славянка, отделна планина.",
+      ],
+      conclusion: "Обещаващ, но най-слабо верифициран от трите маршрута — препоръчва се обаждане на хижата и допълнително търсене на GPX/форумни описания преди да го планираш конкретно.",
+    },
+    days: [
+      { date: "Ден 1", label: "Петрово/Голешево → х. Извора", type: "Транспорт + лек преход", distance: "6-8 км", gain: "~200-250м (оценка)", time: "неуточнено", stay: "х. Извора", difficulty: "Лесен" },
+      { date: "Ден 2", label: "х. Извора → връх Гоцев → обратно", type: "Преход", distance: "не е потвърдено", gain: "900-1100м (оценка)", time: "неуточнено", stay: "–", difficulty: "Висок" },
+    ],
+    accommodation: [
+      { name: "х. Извора", location: "704м н.в., подножие на Славянка", rating: null, price: null, note: "50 места, 10 стаи (8 със собствен санитарен възел), целогодишно отопление." },
+    ],
+    taxis: [],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=11&overlay=rain&product=ecmwf&level=surface&lat=41.4141&lon=23.5573",
+    notesDefault: "⚠️ Този маршрут е новодобавен и слабо верифициран — обади се на хижа Извора (+359 88 296 6372) за потвърждение на разстоянието и състоянието на пътеката преди да го планираш.",
+  },
+
+  // Обогатен от Perplexity изследване (ориг. id: ponor-1)
+  {
+    id: "S01",
+    kind: "detailed",
+    name: "Понор I",
+    region: "Стара планина",
+    status: "Идея",
+    difficulty: "Средна",
+    distanceKm: 15,
+    gainM: 850,
+    lossM: 850,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април – Ноември",
+    forecastLink: "https://www.google.com/search?q=weather+Lakatnik+Sofiya",
+    busLink: "https://www.busexpress.bg/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Лакатник → х. Тръстеная → Бов, с възможни варианти през по-високи карстови ръбове и по-ниски горски отсечки при мокро време.",
+    verificationLevel: "СРЕДНО — базовите данни са дадени от теб; без достъп до допълнителна проверка в момента не мога надеждно да потвърдя хижи, телефони и GPS.",
+    transport: {
+      summary: "Най-практичен е старт/финиш с влак по Искърското дефиле; с кола логистиката е удобна, но трансферът между началото и края остава най-често нужният проблем.",
+      car: {
+        available: true,
+        text: "Достъпът до Лакатник и Бов е по асфалтови пътища; в района има удобни точки за оставяне на кола, но конкретен GPS за паркинг трябва да се верифицира на място или по актуален източник.",
+        parkingNote: "Подходящи са гара Лакатник и централните зони около Бов; при уикенд и празници има риск от заетост.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Лакатник",
+            mode: "Влак",
+            time: "около 1–1.5 ч",
+            note: "Най-удобен вариант за старт.",
+          },
+          {
+            from: "Бов",
+            to: "София",
+            mode: "Влак",
+            time: "около 1–1.5 ч",
+            note: "Лесно връщане след маршрута.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Тръстеная",
+        elevation: null,
+        beds: null,
+        officialPhone: "0886 407 495",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Имам само дадения от теб телефон; липсва верифициран втори независим източник в момента.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита от Своге / Лакатник",
+        phone: null,
+        note: "Обичайно се уговарят по телефон в района; без проверка не добавям номер.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Теренът вероятно е карстов, с ориентационни трудности при мъгла и мокро време.",
+        "Данните за хижата не са напълно верифицирани и трябва да се потвърдят преди тръгване.",
+      ],
+      conclusion: "Маршрутът е подходящ за уикенд без кола, но изисква внимание към ориентацията и актуална проверка на хижата.",
+    },
+    days: [
+      {
+        date: "2026-07-16",
+        label: "Лакатник → х. Тръстеная → Бов",
+        type: "Преход",
+        distance: "15 км",
+        gain: "+850 м",
+        time: "5–7 ч",
+        stay: "Бов",
+        difficulty: "Средна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Къщи за гости в Лакатник",
+        location: "Лакатник",
+        rating: null,
+        price: null,
+        note: "Подходящо за ранно тръгване преди прехода.",
+      },
+      {
+        name: "Къщи за гости в Бов",
+        location: "Бов",
+        rating: null,
+        price: null,
+        note: "Подходящо за нощувка след прехода.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за хора, които искат сравнително кратък, но техничен уикенд преход с лесна железопътна логистика.",
+      fridayNight: "Не е задължителна нощувка в петък, ако тръгването е рано от София.",
+      terrain: "Карстово било и горски преходи; възможни са по-неясни отсечки при лоша видимост.",
+      kmNote: "Приемам базовата стойност 15 км / +850 м / -850 м като ориентир, без GPX верификация.",
+      assessment: "Добър маршрут за безколесна логистика, но с нужда от проверка на хижа и ориентири.",
+      practicalRank: 1,
+    },
+    sources: [
+      {
+        title: "Туристическа карта на Стара Планина - част 2",
+        url: "https://www.brannik.bg/turisticheska-karta-na-stara-planina-chast-2/",
+      },
+      {
+        title: "Транспорт - Понор планина",
+        url: "https://ponor.org/index.php/2024/08/10/transport-ponor/",
+      },
+      {
+        title: "Маршрути в Понор планина",
+        url: "https://ponor.org/index.php/cat/tracks/",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: ponor-2)
+  {
+    id: "S02",
+    kind: "detailed",
+    name: "Понор II",
+    region: "Стара планина",
+    status: "Идея",
+    difficulty: "Средна",
+    distanceKm: 12,
+    gainM: 700,
+    lossM: 700,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април – Ноември",
+    forecastLink: "https://www.google.com/search?q=weather+Bov+Lakatnik",
+    busLink: "https://www.busexpress.bg/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Бов → заслон Буковец → Лакатник, с алтернативи по по-ниски горски и черни пътища при влошено време.",
+    verificationLevel: "СРЕДНО — базовите данни са дадени от теб; в тази среда не мога да потвърдя контактите и GPS координатите.",
+    transport: {
+      summary: "Железопътната връзка по Искърското дефиле е най-удобна; при кола остава удобен трансфер между Бов и Лакатник.",
+      car: {
+        available: true,
+        text: "До Бов и Лакатник се стига по асфалт; маршрутът е удобен за комбинация паркиране в единия край и връщане с влак.",
+        parkingNote: "Провери наличието на места около гара Бов и Лакатник, особено в почивни дни.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Бов",
+            mode: "Влак",
+            time: "около 1–1.5 ч",
+            note: "Удобен старт от северния край.",
+          },
+          {
+            from: "Лакатник",
+            to: "София",
+            mode: "Влак",
+            time: "около 1–1.5 ч",
+            note: "Удобен финал.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "заслон Буковец",
+        elevation: null,
+        beds: null,
+        officialPhone: null,
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Разполагам само с дадения от теб телефон; не мога да го съпоставя с независим втори източник без допълнително търсене.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита от Своге / Бов / Лакатник",
+        phone: null,
+        note: "Полезни за кратък трансфер, ако влакът не съвпада.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Ориентацията в Понор при мъгла може да е трудна.",
+        "Контактите за заслона не са потвърдени с независим източник в момента.",
+      ],
+      conclusion: "Кратък и практичен преход за уикенд, особено ако искаш железопътна логистика в двата края.",
+    },
+    days: [
+      {
+        date: "2026-07-16",
+        label: "Бов → заслон Буковец → Лакатник",
+        type: "Преход",
+        distance: "12 км",
+        gain: "+700 м",
+        time: "4–6 ч",
+        stay: "Лакатник",
+        difficulty: "Средна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Къщи за гости в Бов",
+        location: "Бов",
+        rating: null,
+        price: null,
+        note: "Удобно за старт на следващ ден по Искърското дефиле.",
+      },
+      {
+        name: "Къщи за гости в Лакатник",
+        location: "Лакатник",
+        rating: null,
+        price: null,
+        note: "Удобно при късно пристигане или за ранно тръгване.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за хора, които искат кратък маршрут, лесна железопътна логистика и по-малко натоварване от първия Понорски вариант.",
+      fridayNight: "Не е задължителна нощувка в петък.",
+      terrain: "Комбинация от горски и карстови участъци, с вероятно по-спокойно темпо от Понор I.",
+      kmNote: "Приемам базовата стойност 12 км / +700 м / -700 м като ориентир.",
+      assessment: "Практичен и кратък маршрут; добър избор при ограничено време.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "Туристическа карта на Стара Планина - част 2",
+        url: "https://www.brannik.bg/turisticheska-karta-na-stara-planina-chast-2/",
+      },
+      {
+        title: "Транспорт - Понор планина",
+        url: "https://ponor.org/index.php/2024/08/10/transport-ponor/",
+      },
+      {
+        title: "Маршрути в Понор планина",
+        url: "https://ponor.org/index.php/cat/tracks/",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: vrah-koznitsa)
+  {
+    id: "S03",
+    kind: "detailed",
+    name: "вр. Козница",
+    region: "Стара планина",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: 18,
+    gainM: 1100,
+    lossM: 1100,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Май – Октомври",
+    forecastLink: "https://www.google.com/search?q=weather+Rebrovo+Opletnya",
+    busLink: "https://www.busexpress.bg/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Томпсън/Реброво → х. Лескова → Оплетня, с възможни алтернативи през по-ниски пътеки при лоша видимост или умора.",
+    verificationLevel: "СРЕДНО — ползвам базовите данни, но не мога да потвърдя телефоните, капацитета и GPS на хижата без допълнителна проверка.",
+    transport: {
+      summary: "Логистично по-сложен от Понорските маршрути; най-удобен е вариант с влак/автобус до стартовата зона и предварително планиран трансфер от финиша.",
+      car: {
+        available: true,
+        text: "С кола достъпът до Томпсън/Реброво и Оплетня е възможен, но конкретни паркинги и GPS точки трябва да се потвърдят предварително.",
+        parkingNote: "Най-практично е да се остави кола в единия край и да се организира връщане от другия.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Реброво / Томпсън",
+            mode: "Влак или регионален транспорт",
+            time: "зависи от връзките",
+            note: "Най-вероятно е нужен междинен трансфер.",
+          },
+          {
+            from: "Оплетня",
+            to: "София",
+            mode: "Регионален транспорт / такси",
+            time: "зависи от връзките",
+            note: "Финалът може да изисква предварително уговаряне.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Лескова",
+        elevation: null,
+        beds: null,
+        officialPhone: "0877 770 184",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Даденият телефон е наличен от базовите данни, но не е потвърден с втори източник в тази сесия.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита от Своге / района",
+        phone: null,
+        note: "Вероятно най-полезни за последните километри от/до Оплетня.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Дължина и денивелация: това е най-тежкият от петте маршрута по дадените базови стойности.",
+        "Теренът вероятно е подходящ за по-опитни туристи и стабилно време.",
+        "Липсва текуща независима верификация за хижа Лескова и логистиката.",
+      ],
+      conclusion: "Това е най-натоварващият вариант и е по-подходящ за стабилно време и туристи с добър теренен опит.",
+    },
+    days: [
+      {
+        date: "2026-07-16",
+        label: "Томпсън/Реброво → х. Лескова → Оплетня",
+        type: "Преход",
+        distance: "18 км",
+        gain: "+1100 м",
+        time: "7–9 ч",
+        stay: "Оплетня",
+        difficulty: "Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Къщи за гости в Своге",
+        location: "Своге",
+        rating: null,
+        price: null,
+        note: "Практичен базов вариант за трансфер към началото.",
+      },
+      {
+        name: "Къщи за гости в района на Лакатник / Бов",
+        location: "Искърско дефиле",
+        rating: null,
+        price: null,
+        note: "Алтернатива за комбиниране с влак и местен транспорт.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за по-опитни туристи, които искат по-дълъг и натоварващ маршрут с по-сериозна денивелация.",
+      fridayNight: "Препоръчва се нощувка в петък, ако искаш ранен и сигурен старт.",
+      terrain: "Дълъг преход с по-голямо натоварване и вероятни стръмни участъци.",
+      kmNote: "Приемам базовата стойност 18 км / +1100 м / -1100 м като ориентир.",
+      assessment: "От петте маршрута това е най-високорисковият и най-изтощаващ вариант.",
+      practicalRank: 5,
+    },
+    sources: [
+      {
+        title: "Туристическа карта на Стара Планина - част 2",
+        url: "https://www.brannik.bg/turisticheska-karta-na-stara-planina-chast-2/",
+      },
+      {
+        title: "Стара Планина | Планини | ПСС",
+        url: "https://www.pss-bg.bg/mountains/stara-planina/",
+      },
+      {
+        title: "Маршрути в Стара планина",
+        url: "https://opoznai.bg/stara-planina/all/marshruti",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: vrachanski)
+  {
+    id: "S04",
+    kind: "detailed",
+    name: "Врачански",
+    region: "Стара планина",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: 14,
+    gainM: 950,
+    lossM: 950,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април – Ноември",
+    forecastLink: "https://www.google.com/search?q=weather+Zverino+Cherepish",
+    busLink: "https://www.busexpress.bg/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Зверино → х. Пършевица → Черепиш, с алтернативи през по-леки горски и шосейни участъци при лоша видимост или мокър скален терен.",
+    verificationLevel: "СРЕДНО — базовите данни са дадени от теб; без допълнителна проверка не мога надеждно да потвърдя хижата и контактите.",
+    transport: {
+      summary: "Лесно се комбинира с влак в района на Искърското дефиле, но изисква добра организация за началото и края.",
+      car: {
+        available: true,
+        text: "Достъпът до Зверино и Черепиш е възможен с кола; пътната логистика е удобна, но конкретни паркинги и GPS точки не са потвърдени тук.",
+        parkingNote: "Провери местата около манастир Черепиш и центъра на Зверино.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Зверино",
+            mode: "Влак",
+            time: "ориентировъчно 1.5–2.5 ч",
+            note: "Подходящ старт за маршрута.",
+          },
+          {
+            from: "Черепиш",
+            to: "София",
+            mode: "Влак",
+            time: "ориентировъчно 1.5–2.5 ч",
+            note: "Удобен финал при съвпадение с разписанието.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Пършевица",
+        elevation: null,
+        beds: null,
+        officialPhone: "0878 103 870",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Разполагам само с подадения телефон; не мога да потвърдя допълнителни контакти и GPS в тази сесия.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита от Мездра / Враца / района",
+        phone: null,
+        note: "Възможен вариант за кратки трансфери до началото или края.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Маршрутът е с по-сериозна денивелация и заслужава стабилно време.",
+        "Врачанският дял може да има технични или каменисти участъци.",
+        "Липсва независима верификация за х. Пършевица в момента.",
+      ],
+      conclusion: "Силен избор за по-опитни туристи, но не е най-леката опция за уикенд без натоварена подготовка.",
+    },
+    days: [
+      {
+        date: "2026-07-16",
+        label: "Зверино → х. Пършевица → Черепиш",
+        type: "Преход",
+        distance: "14 км",
+        gain: "+950 м",
+        time: "6–8 ч",
+        stay: "Черепиш",
+        difficulty: "Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Къщи за гости в Зверино",
+        location: "Зверино",
+        rating: null,
+        price: null,
+        note: "Удобно за ранен старт.",
+      },
+      {
+        name: "Гостоприемници / къщи за гости при Черепиш",
+        location: "Черепиш",
+        rating: null,
+        price: null,
+        note: "Подходящо за финал или резервна нощувка.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за туристи, които търсят по-сериозен еднодневен или двудневен преход в района на Врачански Балкан.",
+      fridayNight: "Препоръчва се, ако искаш ранен старт и спокойна логистика.",
+      terrain: "Комбинация от горски изкачвания и по-открити участъци, с възможни каменисти зони.",
+      kmNote: "Приемам базовата стойност 14 км / +950 м / -950 м като ориентир.",
+      assessment: "Баланс между дължина и денивелация, но с висок риск при лошо време.",
+      practicalRank: 4,
+    },
+    sources: [
+      {
+        title: "Туристическа карта на Стара Планина - част 2",
+        url: "https://www.brannik.bg/turisticheska-karta-na-stara-planina-chast-2/",
+      },
+      {
+        title: "Стара Планина | Планини | ПСС",
+        url: "https://www.pss-bg.bg/mountains/stara-planina/",
+      },
+      {
+        title: "Маршрути в Стара планина",
+        url: "https://opoznai.bg/stara-planina/all/marshruti",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: vrah-murgash)
+  {
+    id: "S05",
+    kind: "detailed",
+    name: "вр. Мургаш",
+    region: "Стара планина",
+    status: "Идея",
+    difficulty: "Средна",
+    distanceKm: 12,
+    gainM: 800,
+    lossM: 800,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април – Ноември",
+    forecastLink: "https://www.google.com/search?q=weather+Buhovo+Svoge",
+    busLink: "https://www.busexpress.bg/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Бухово → х. Мургаш → Своге, с възможни алтернативи по билни или по-ниски горски пътеки според сезона и времето.",
+    verificationLevel: "СРЕДНО — базовите данни са дадени от теб; не мога да потвърдя независими контакти, GPS и капацитет на хижата без допълнително търсене.",
+    transport: {
+      summary: "Възможен е с кола или комбинирано с градски/регионален транспорт до Бухово и от Своге.",
+      car: {
+        available: true,
+        text: "Достъпът до Бухово е удобен с кола, а Своге е лесен изходен пункт; комбинацията е практична за еднопосочен преход.",
+        parkingNote: "Провери места за паркиране в Бухово и около гара Своге.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Бухово",
+            mode: "Градски/регионален транспорт",
+            time: "зависи от връзките",
+            note: "Подходящ старт за ранно тръгване.",
+          },
+          {
+            from: "Своге",
+            to: "София",
+            mode: "Влак",
+            time: "около 1–1.5 ч",
+            note: "Удобен финал.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Мургаш",
+        elevation: null,
+        beds: null,
+        officialPhone: "0888 38 05 30",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Имам само подадения от теб телефон; не мога да го потвърдя с втори източник в тази сесия.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита от Своге и района на Бухово",
+        phone: null,
+        note: "Полезни при разминаване с разписанията.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Може да има открито билно време и силен вятър около Мургаш.",
+        "Логистиката е сравнително добра, но хижата не е верифицирана допълнително.",
+        "Базовата денивелация е умерена, но теренът може да е изморителен.",
+      ],
+      conclusion: "Баланс между логистика и натоварване; подходящ за средно опитни туристи при стабилно време.",
+    },
+    days: [
+      {
+        date: "2026-07-16",
+        label: "Бухово → х. Мургаш → Своге",
+        type: "Преход",
+        distance: "12 км",
+        gain: "+800 м",
+        time: "4.5–6.5 ч",
+        stay: "Своге",
+        difficulty: "Средна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Къщи за гости в Бухово",
+        location: "Бухово",
+        rating: null,
+        price: null,
+        note: "Удобно за ранен старт.",
+      },
+      {
+        name: "Къщи за гости в Своге",
+        location: "Своге",
+        rating: null,
+        price: null,
+        note: "Подходящо за финал и връщане към София.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за туристи, които искат умерен маршрут с добра транспортна свързаност.",
+      fridayNight: "Не е задължително, но е полезно при ранно и спокойно тръгване.",
+      terrain: "Комбинация от изкачване към билото и последващо слизане към Своге.",
+      kmNote: "Приемам базовата стойност 12 км / +800 м / -800 м като ориентир.",
+      assessment: "От петте маршрута това е един от по-практичните варианти с добра транспортна логистика.",
+      practicalRank: 3,
+    },
+    sources: [
+      {
+        title: "Туристическа карта на Стара Планина - част 2",
+        url: "https://www.brannik.bg/turisticheska-karta-na-stara-planina-chast-2/",
+      },
+      {
+        title: "Стара Планина | Планини | ПСС",
+        url: "https://www.pss-bg.bg/mountains/stara-planina/",
+      },
+      {
+        title: "Маршрути в Стара планина",
+        url: "https://opoznai.bg/stara-planina/all/marshruti",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: yuzhen-pirin)
+  {
+    id: "P06",
+    kind: "detailed",
+    name: "Южен Пирин",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Лесна",
+    distanceKm: 16,
+    gainM: 550,
+    lossM: 550,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Май – Октомври",
+    forecastLink: "",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Гоце Делчев → х. Попови ливади → с. Делчево",
+    verificationLevel: "СРЕДНО — базовите данни са ясни, но без проверка на детайлите по хижата и точния транспорт.",
+    transport: {
+      summary: "Най-удобно е с лична кола или местно такси до началото/края; обществен транспорт е ограничен.",
+      car: {
+        available: true,
+        text: "Достъпът до Гоце Делчев и Делчево е по асфалт; последният подход към х. Попови ливади обикновено е проходим, но трябва да се провери текущото състояние на пътя.",
+        parkingNote: "Паркиране при хижата или в подходящи уширения; провери на място за свободни места и ограничения.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Гоце Делчев",
+            mode: "Автобус",
+            time: "около 3.5–5 ч",
+            note: "След това местен транспорт или такси към изходната точка.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Попови ливади",
+        elevation: null,
+        beds: null,
+        officialPhone: "0896722557",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Наличен е само един базов телефон; не е потвърден с втори независим източник.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местни таксита Гоце Делчев",
+        phone: null,
+        note: "Подходящи за трансфер до х. Попови ливади или Делчево.",
+      },
+    ],
+    risk: {
+      level: "НИСЪК",
+      color: "emerald",
+      points: [
+        "Маршрутът е къс и сравнително ненатоварващ.",
+        "Основният риск е в логистиката и евентуална лятна жега.",
+        "Без потвърдено техническо преминаване по базовото описание.",
+      ],
+      conclusion: "Подходящ за по-лек уикенд и за комбиниране с транспорт без кола.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Гоце Делчев → х. Попови ливади → с. Делчево",
+        type: "Преход",
+        distance: "16 км",
+        gain: "+550м",
+        time: "4–6ч",
+        stay: "х. Попови ливади или Делчево",
+        difficulty: "Лесна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Къщи за гости в Делчево",
+        location: "с. Делчево",
+        rating: null,
+        price: null,
+        note: "Подходящи за финал на прехода.",
+      },
+    ],
+    research: {
+      suitedFor: "Хора, които търсят по-лека Пиринска разходка с ясна логистика.",
+      fridayNight: "Не е задължително.",
+      terrain: "Лек до умерен терен, без голяма денивелация по базовата схема.",
+      kmNote: "Потвърдено само по базовите стойности; липсва GPX проверка.",
+      assessment: "Добър за кратък маршрут и за начало на пакет без сложна алпийска логистика.",
+      practicalRank: 4,
+    },
+    sources: [
+      {
+        title: "Туристически маршрути",
+        url: "https://www.pirin.bg/?page_id=596",
+      },
+      {
+        title: "Национален парк Пирин",
+        url: "https://parks.bg/parks/pirin/",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: vrah-vihren)
+  {
+    id: "P07",
+    kind: "detailed",
+    name: "вр. Вихрен",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: 7,
+    gainM: 964,
+    lossM: 964,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Банско → х. Бъндерица → вр. Вихрен → х. Вихрен",
+    verificationLevel: "СРЕДНО/ДОБРО — базовите параметри са стабилни, но маршрутът по билото и подходите изискват сезонна проверка.",
+    transport: {
+      summary: "Най-лесно е с лична кола до Банско и след това с планинско такси или собствен трансфер до района на хижите.",
+      car: {
+        available: true,
+        text: "Банско е лесно достъпен с кола; до района на х. Бъндерица и х. Вихрен пътят е планински и сезонно натоварен.",
+        parkingNote: "Паркингът около х. Вихрен е ограничен и се пълни рано; при натоварени дни паркирането може да е на по-долен участък.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Банско",
+            mode: "Автобус или влак + автобус",
+            time: "около 3.5–5 ч",
+            note: "От Банско се ползва местен транспорт или такси до началото на пътеката.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Бъндерица",
+        elevation: null,
+        beds: null,
+        officialPhone: "0898 868 999",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Няма надеждно потвърдени контактни данни в наличните базови входни данни.",
+      },
+      {
+        name: "х. Вихрен",
+        elevation: null,
+        beds: null,
+        officialPhone: "0889 890 442",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Телефонът е даден в базовите данни, но не е потвърден с втори независим източник тук.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местни таксита Банско",
+        phone: null,
+        note: "Удобни за трансфер до х. Вихрен и района на х. Бъндерица.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Връх Вихрен е висок и изложен маршрут.",
+        "Възможни са бързи промени във времето, мъгла, силен вятър и остатъчен сняг.",
+        "Класическият подход от х. Бъндерица е технически по-взискателен от долинни преходи.",
+      ],
+      conclusion: "Силен планински ден, подходящ само при стабилна прогноза и добра подготовка.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Банско → х. Бъндерица → вр. Вихрен → х. Вихрен",
+        type: "Преход",
+        distance: "13 км",
+        gain: "+964м",
+        time: "6–8ч",
+        stay: "х. Вихрен",
+        difficulty: "Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели и къщи за гости в Банско",
+        location: "Банско",
+        rating: null,
+        price: null,
+        note: "Най-логично за нощувка преди ранен старт.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни туристи, които търсят класически високопланински Пирински ден.",
+      fridayNight: "Препоръчително при ранен старт.",
+      terrain: "Стръмно, експонирано и с възможни алпийски условия.",
+      kmNote: "Базовите километри и денивелация изглеждат консистентни с типичен ден за Вихрен.",
+      assessment: "Един от най-логистично удобните, но и най-рисковите от списъка.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "Национален парк Пирин",
+        url: "https://parks.bg/parks/pirin/",
+      },
+      {
+        title: "Обекти за подслон - ДНП Пирин",
+        url: "https://www.pirin.bg/?page_id=977",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: sinanitsa-1)
+  {
+    id: "P08",
+    kind: "detailed",
+    name: "Синаница I",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: 15,
+    gainM: 1200,
+    lossM: 1200,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Кресна → х. Синаница → х. Яне Сандански → Сандански",
+    verificationLevel: "СРЕДНО — базовите данни са ясни, но липсва тук независима проверка на хижите и точните подходи.",
+    transport: {
+      summary: "Подходящо за трансфер с кола до Кресна и изход с обществен транспорт от Сандански.",
+      car: {
+        available: true,
+        text: "Кресна и Сандански са достъпни с кола; планинският участък започва от долината към х. Синаница.",
+        parkingNote: "Паркирането в Кресна е по-лесно от горните пунктове; за край в Сандански има много паркинги и места за настаняване.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Сандански",
+            mode: "Автобус или влак",
+            time: "около 2.5–4 ч",
+            note: "След това местен транспорт/такси към Кресна.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Синаница",
+        elevation: null,
+        beds: null,
+        officialPhone: "0896 798 040",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Телефонът е наличен само от базовите данни и не е двукратно проверен.",
+      },
+      {
+        name: "х. Яне Сандански",
+        elevation: null,
+        beds: null,
+        officialPhone: "0896 766 174",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Липсват сигурни контактни и капацитетни данни в този вход.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местни таксита Сандански / Кресна",
+        phone: null,
+        note: "Полезни за организиране на стартов трансфер към Кресна.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Дълъг преход с голяма денивелация.",
+        "Планинският участък е подходящ само при стабилно време.",
+        "Крайната логистика е добра, но самият маршрут е натоварващ.",
+      ],
+      conclusion: "Силен еднодневен или двудневен преход за подготвени туристи.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Кресна → х. Синаница",
+        type: "Преход",
+        distance: "част от 24 км",
+        gain: "част от +1200м",
+        time: "5–7ч",
+        stay: "х. Синаница",
+        difficulty: "Висока",
+      },
+      {
+        date: null,
+        label: "х. Синаница → х. Яне Сандански → Сандански",
+        type: "Преход",
+        distance: "остатък от 24 км",
+        gain: "остатък до +1200м / -1200м",
+        time: "6–8ч",
+        stay: "Сандански",
+        difficulty: "Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели в Сандански",
+        location: "Сандански",
+        rating: null,
+        price: null,
+        note: "Лесен финал с много опции.",
+      },
+    ],
+    research: {
+      suitedFor: "Туристи с опит в дълги Пирински преходи.",
+      fridayNight: "Полезна е нощувка преди старта, ако се прави в два дни.",
+      terrain: "Комбинация от дълъг подход и алпийски участък в сърцевината на Пирин.",
+      kmNote: "Базовите стойности изглеждат реалистични за такъв маршрут, но без тук да има GPX потвърждение.",
+      assessment: "Силен и красив маршрут, но изисква дисциплина и ранно тръгване.",
+      practicalRank: 5,
+    },
+    sources: [
+      {
+        title: "Туристически маршрути",
+        url: "https://www.pirin.bg/?page_id=596",
+      },
+      {
+        title: "Обекти за подслон - ДНП Пирин",
+        url: "https://www.pirin.bg/?page_id=977",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: sinanitsa-2)
+  {
+    id: "P09",
+    kind: "detailed",
+    name: "Синаница II",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Средна/Висока",
+    distanceKm: 11,
+    gainM: 1140,
+    lossM: 1140,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Сандански → х. Синаница → Муратово езеро → х. Вихрен",
+    verificationLevel: "СРЕДНО — базовите данни са налични, но маршрутът е логистично и теренно променлив според сезона.",
+    transport: {
+      summary: "Добре комбинирано с обществен транспорт до Сандански и трансфер към долината.",
+      car: {
+        available: true,
+        text: "Сандански и районът на долината са удобни за кола; горният участък към хижите е планински.",
+        parkingNote: "Най-лесно е да се остави автомобилът в Сандански или на подходящо място по долния достъп.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Сандански",
+            mode: "Автобус или влак",
+            time: "около 2.5–4 ч",
+            note: "Следва трансфер до началото на пътеката.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Синаница",
+        elevation: null,
+        beds: null,
+        officialPhone: "0896 798 040",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Контактът идва от базовите данни; втори източник не е проверен тук.",
+      },
+      {
+        name: "х. Вихрен",
+        elevation: null,
+        beds: null,
+        officialPhone: "0889 890 442",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Телефонът е от базовите данни и е възможно да се промени сезонно.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местни таксита Сандански",
+        phone: null,
+        note: "Полезни за трансфер към началото и за връщане от района на х. Вихрен.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Маршрутът е къс по километри, но с голяма денивелация.",
+        "Сезонно може да има остатъчен сняг и мокри камъни.",
+        "Прехвърлянето между две различни долини прави логистиката по-сложна.",
+      ],
+      conclusion: "Технически и логистично по-сложен, отколкото изглежда по километри.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Сандански → х. Синаница",
+        type: "Преход",
+        distance: "част от 11 км",
+        gain: "част от +1140м",
+        time: "4–6ч",
+        stay: "х. Синаница",
+        difficulty: "Средна/Висока",
+      },
+      {
+        date: null,
+        label: "х. Синаница → Муратово езеро → х. Вихрен",
+        type: "Преход",
+        distance: "остатък от 11 км",
+        gain: "остатък до +1140м / -1140м",
+        time: "5–7ч",
+        stay: "х. Вихрен",
+        difficulty: "Средна/Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели в Сандански",
+        location: "Сандански",
+        rating: null,
+        price: null,
+        note: "Удобна база за старт.",
+      },
+      {
+        name: "Хижарско настаняване",
+        location: "х. Синаница / х. Вихрен",
+        rating: null,
+        price: null,
+        note: "Най-практично за двудневен вариант.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни туристи, които искат силен, но кратък Пирински преход.",
+      fridayNight: "Препоръчително при двудневен вариант.",
+      terrain: "Стръмен и каменист преход с преход между две хижни зони.",
+      kmNote: "11 км с 1140 м денивелация е реалистична, но натоварването е по-голямо от цифрата.",
+      assessment: "Много добър маршрут за подготвени хора, но не е лек.",
+      practicalRank: 1,
+    },
+    sources: [
+      {
+        title: "Туризъм",
+        url: "https://pirinnationalpark.egov.bg/wps/portal/direkciq-pirin/tourism",
+      },
+      {
+        title: "Обекти за подслон - ДНП Пирин",
+        url: "https://www.pirin.bg/?page_id=977",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: ezeren-krag)
+  {
+    id: "P10",
+    kind: "detailed",
+    name: "Езерен кръг",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Средна",
+    distanceKm: 22,
+    gainM: 890,
+    lossM: 700,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Банско → х. Демяница → Валявишки езера → х. Безбог",
+    verificationLevel: "СРЕДНО — базовите данни са логични и последователни, но подробностите по хижите и транспортa не са двукратно проверени тук.",
+    transport: {
+      summary: "Много подходящ за Банско като транспортна база; най-лесно е с кола до Банско и с местен трансфер към горната част.",
+      car: {
+        available: true,
+        text: "Банско е удобна база с автомобил; до х. Безбог районът е планински и зависи от сезонния достъп.",
+        parkingNote: "Паркирането в Банско е лесно, а при горните хижи е по-ограничено и сезонно.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Банско",
+            mode: "Автобус или влак + автобус",
+            time: "около 3.5–5 ч",
+            note: "След това местен трансфер към началото.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Демяница",
+        elevation: null,
+        beds: null,
+        officialPhone: "0877 79 94 06",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Няма потвърдени контактни данни в базовите входни данни.",
+      },
+      {
+        name: "х. Безбог",
+        elevation: null,
+        beds: null,
+        officialPhone: "+359 74 472120",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Телефонът е от базовите данни, но липсва второ независимо потвърждение тук.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местни таксита Банско",
+        phone: null,
+        note: "Полезни за достъп до долния старт и за връщане от района на х. Безбог.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Маршрутът е дълъг, но не е екстремно техничен.",
+        "Езерният участък е чувствителен към мъгла и лоша видимост.",
+        "Подходящ е за добро време и ясно ориентиране.",
+      ],
+      conclusion: "Баланс между красота и умерено натоварване, с добра логистика от Банско.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Банско → х. Демяница",
+        type: "Преход",
+        distance: "част от 22 км",
+        gain: "част от +890м",
+        time: "4–6ч",
+        stay: "х. Демяница",
+        difficulty: "Средна",
+      },
+      {
+        date: null,
+        label: "х. Демяница → Валявишки езера → х. Безбог",
+        type: "Преход",
+        distance: "остатък от 22 км",
+        gain: "остатък до +890м / -700м",
+        time: "6–8ч",
+        stay: "х. Безбог",
+        difficulty: "Средна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели и къщи за гости в Банско",
+        location: "Банско",
+        rating: null,
+        price: null,
+        note: "Най-удобна изходна база.",
+      },
+    ],
+    research: {
+      suitedFor: "Хора, които искат класически езерен маршрут без много техническа експозиция.",
+      fridayNight: "Полезна е при ранен старт към х. Демяница.",
+      terrain: "Продължителен, но сравнително равномерен планински преход с езерен финал.",
+      kmNote: "22 км и +890/-700 м изглеждат консистентни за този тип маршрут.",
+      assessment: "Един от най-практичните маршрути за уикенд в Пирин от Банско.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "Преходи Пирин планина",
+        url: "https://tripelements.wixsite.com/tripelements-bg/pirin-planina-prehodi",
+      },
+      {
+        title: "Маршрути в Пирин - Планините",
+        url: "https://planinite.site-bg.info/page4.php?id=2&web=pirin",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: koncheto)
+  {
+    id: "P01",
+    kind: "detailed",
+    name: "Кончето",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Трудна",
+    distanceKm: 13,
+    gainM: 1200,
+    lossM: 1700,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юли – Септември",
+    forecastLink: "https://www.google.com/search?q=prognoza+Bansko+Pirin",
+    busLink: "https://www.google.com/search?q=%D0%90%D0%B2%D1%82%D0%BE%D0%B3%D0%B0%D1%80%D0%B8+%D0%91%D0%B0%D0%BD%D1%81%D0%BA%D0%BE",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://www.avtogari.info/",
+    routeLine: "Банско → х. Яворов → ръб/Кончето → х. Вихрен",
+    verificationLevel: "ЧАСТИЧНО — базовите данни са дадени от потребителя; наличен е външен източник за х. Тевно езеро, но не и пълна независима верификация за този маршрут в тази сесия.",
+    transport: {
+      summary: "Най-логичен е достъпът с кола до Банско и по-нататък с местен трансфер/такси; обществен транспорт е удобен само до Банско.",
+      car: {
+        available: true,
+        text: "До Банско се стига по асфалт; последният подход към изхода за маршрута зависи от точната пътека и сезонните ограничения.",
+        parkingNote: "Паркиране в Банско, после пеша или с такси до началната точка; GPS за паркинг не е верифициран в тази сесия.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Банско",
+            mode: "Автобус или влак+автобус",
+            time: "планирай 3-5ч според връзката",
+            note: "Най-лесно за безколесен уикенд.",
+          },
+          {
+            from: "Банско",
+            to: "изходна точка",
+            mode: "Такси",
+            time: "15-30 мин",
+            note: "Необходим е предварителен уговорен трансфер.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Яворов",
+        elevation: 1745,
+        beds: null,
+        officialPhone: "0896 688 413",
+        altPhone: "0886 116 609",
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Потребителят е дал един и същ номер като базов; не е верифициран с независим втори източник в тази сесия.",
+      },
+      {
+        name: "х. Вихрен",
+        elevation: 1950,
+        beds: null,
+        officialPhone: "0889 890 442",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Няма достатъчно данни за потвърждение на контакти и капацитет в тази сесия.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местно такси Банско",
+        phone: null,
+        note: "Потвърди номера от хотела/рецепцията в деня преди тръгване.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Ръбовият участък към Кончето е технически и е подходящ само при стабилно време.",
+        "Сезонността е силна: сняг, лед и мъгла правят участъка значително по-рисков.",
+        "Няма независима двуизточникова верификация на всички детайли за хижите в тази сесия.",
+      ],
+      conclusion: "Маршрутът е високорисков и изисква сухо време, ранен старт и опит в ръбови терени.",
+    },
+    days: [
+      {
+        date: "2026-08-08",
+        label: "Банско → х. Яворов → Кончето → х. Вихрен",
+        type: "Преход",
+        distance: "17 км",
+        gain: "+1200 м",
+        time: "9-11ч",
+        stay: "х. Вихрен",
+        difficulty: "Трудна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели в Банско",
+        location: "Банско",
+        rating: null,
+        price: null,
+        note: "Подходящо за предна вечер; избери близо до центъра за лесен ранен трансфер.",
+      },
+      {
+        name: "х. Вихрен",
+        location: "Пирин",
+        rating: null,
+        price: null,
+        note: "Финалната точка за нощувка след трудния ръбов участък.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни планинари, които търсят техничен и емблематичен пирински преход.",
+      fridayNight: "Препоръчителна е нощувка в Банско преди ранно тръгване.",
+      terrain: "Комбинация от горски подход, алпийски ръб и спускане.",
+      kmNote: "Базовите 17 км и +1200/-1700 м са използвани без независима ревизия; реалният трак може да варира.",
+      assessment: "Един от най-трудните варианти в пакета.",
+      practicalRank: 5,
+    },
+    sources: [
+      {
+        title: "Туристически маршрути – Пирин",
+        url: "https://www.pirin.bg/?page_id=596",
+      },
+      {
+        title: "Пътеводител „Пирин“",
+        url: "https://tangra-bg.org/product/patevoditel-pirin",
+      },
+      {
+        title: "Заслон Тевно езеро — Българските Планини",
+        url: "http://www.bulgarian-mountains.com/Huts/Pirin/Demianica/TevnoEzero",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: demyanitsa)
+  {
+    id: "P02",
+    kind: "detailed",
+    name: "Демяница",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Средна/Висока",
+    distanceKm: 22,
+    gainM: 890,
+    lossM: 890,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "https://www.google.com/search?q=prognoza+Bansko+Dobrinishte+Pirin",
+    busLink: "https://www.google.com/search?q=%D0%B0%D0%B2%D1%82%D0%BE%D0%B3%D0%B0%D1%80%D0%B8+%D0%91%D0%B0%D0%BD%D1%81%D0%BA%D0%BE+%D0%94%D0%BE%D0%B1%D1%80%D0%B8%D0%BD%D0%B8%D1%89%D0%B5",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://www.avtogari.info/",
+    routeLine: "Банско → х. Демяница → х. Безбог → Добринище",
+    verificationLevel: "ЧАСТИЧНО — базовите километри и денивелация са дадени от потребителя; маршрутната логика е типична за района, но пълна независима верификация не е налична в тази сесия.",
+    transport: {
+      summary: "Най-удобно е с кола до Банско/Добринище и местен трансфер; обществен транспорт покрива началото и края сравнително добре.",
+      car: {
+        available: true,
+        text: "Асфалтов достъп до Банско и Добринище; началната пътека към х. Демяница зависи от избрания старт.",
+        parkingNote: "Паркингът е най-практичен в Банско или Добринище, после такси до началната точка.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Банско",
+            mode: "Автобус или влак+автобус",
+            time: "3-5ч",
+            note: "Добър вариант за уикенд без кола.",
+          },
+          {
+            from: "Добринище",
+            to: "крайна/начална точка",
+            mode: "Теснолинейка/такси/пеша",
+            time: "варира",
+            note: "Възможно е комбиниране според логистиката.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Демяница",
+        elevation: 1895,
+        beds: null,
+        officialPhone: "0877 79 94 06",
+        altPhone: "0878 688 135",
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Нужна е допълнителна верификация на контактите и капацитета.",
+      },
+      {
+        name: "х. Безбог",
+        elevation: 2240,
+        beds: null,
+        officialPhone: "+359 74 472120",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Няма достатъчно независими източници в тази сесия.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местно такси Банско/Добринище",
+        phone: null,
+        note: "Потвърди на място.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Маршрутът е дълъг, но без задължителни технични елементи като Кончето.",
+        "Променливото време в Пирин може да вдигне риска в алпийската част.",
+        "Няма пълна двуизточникова верификация за всички хижи.",
+      ],
+      conclusion: "Подходящ е за опитни, но не екстремно технически преходи.",
+    },
+    days: [
+      {
+        date: "2026-08-08",
+        label: "Банско → х. Демяница → х. Безбог / район",
+        type: "Преход",
+        distance: "22 км",
+        gain: "+890 м",
+        time: "7-9ч",
+        stay: "х. Безбог",
+        difficulty: "Средна/Висока",
+      },
+      {
+        date: "2026-08-09",
+        label: "х. Безбог → Добринище",
+        type: "Преход/спускане",
+        distance: "вкл. в общите 22 км",
+        gain: "вкл. в общите +890/-890 м",
+        time: "3-5ч",
+        stay: "Добринище",
+        difficulty: "Средна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели в Банско",
+        location: "Банско",
+        rating: null,
+        price: null,
+        note: "Добра база за старт.",
+      },
+      {
+        name: "Хотели в Добринище",
+        location: "Добринище",
+        rating: null,
+        price: null,
+        note: "Удобни за финал и транспорт обратно.",
+      },
+    ],
+    research: {
+      suitedFor: "Хора, които искат дълъг, логистично ясен пирински преход без най-тежките технични пасажи.",
+      fridayNight: "Силно препоръчителна нощувка в Банско.",
+      terrain: "Горски подход, високи езерни райони и дълго слизане към Добринище.",
+      kmNote: "Използвани са базовите 22 км и ±890 м; реалното разпределение по дни зависи от избраната линия.",
+      assessment: "Практичен вариант за двудневен преход с разумна логистика.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "Туристически маршрути – Пирин",
+        url: "https://www.pirin.bg/?page_id=596",
+      },
+      {
+        title: "Пътеводител „Пирин“",
+        url: "https://tangra-bg.org/product/patevoditel-pirin",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: tevno-ezero-2)
+  {
+    id: "P05",
+    kind: "detailed",
+    name: "Тевно езеро II",
+    region: "Пирин",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: 16,
+    gainM: 900,
+    lossM: 900,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юли – Септември",
+    forecastLink: "https://www.google.com/search?q=prognoza+Vihren+Tevno+Sandanski",
+    busLink: "https://www.google.com/search?q=%D0%B0%D0%B2%D1%82%D0%BE%D0%B3%D0%B0%D1%80%D0%B8+%D0%A1%D0%B0%D0%BD%D0%B4%D0%B0%D0%BD%D1%81%D0%BA%D0%B8",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://www.avtogari.info/",
+    routeLine: "х. Вихрен → заслон Тевно езеро → Бегово поле → Сандански",
+    verificationLevel: "ПОТВЪРДЕНО ЧАСТИЧНО — има външен източник за заслон Тевно езеро с GPS/телефон/височина, но не и пълна независима верификация на цялата последователност.",
+    transport: {
+      summary: "Най-удобно е с кола или автобус до Сандански и трансфер към х. Вихрен; маршрутьт е подходящ за точка-до-точка логистика.",
+      car: {
+        available: true,
+        text: "Асфалт до Сандански и Банско; достъпът до х. Вихрен е по планински път и зависи от сезон/ограничения.",
+        parkingNote: "Практично е паркиране в Сандански и трансфер нагоре към Вихрен.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Сандански",
+            mode: "Влак или автобус",
+            time: "3-5ч",
+            note: "Добър изходен град за края на маршрута.",
+          },
+          {
+            from: "Сандански",
+            to: "х. Вихрен",
+            mode: "Такси",
+            time: "1-1.5ч",
+            note: "Нужен е предварителен трансфер.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "заслон Тевно езеро",
+        elevation: 2512,
+        beds: 30,
+        officialPhone: "0886/397268",
+        altPhone: "0884/663635",
+        email: null,
+        gps: "41.6988,23.4829",
+        verified: true,
+        conflict: null,
+      },
+      {
+        name: "х. Вихрен",
+        elevation: null,
+        beds: null,
+        officialPhone: "0889 890 442",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Липсва верификация за контакти и капацитет в тази сесия.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Местно такси Сандански",
+        phone: null,
+        note: "Потвърди за ранно изкачване към хижата.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Това е по-дълъг високопланински преход с излизане към Сандански.",
+        "Посоката от Вихрен към Тевно е чувствителна към мъгла и късно тръгване.",
+        "Налични са надеждни данни за самия заслон, но не и за всички междинни детайли.",
+      ],
+      conclusion: "Подходящ е за опитни туристи с добра кондиция и стабилно време.",
+    },
+    days: [
+      {
+        date: "2026-08-08",
+        label: "х. Вихрен → заслон Тевно езеро",
+        type: "Преход",
+        distance: "16 км",
+        gain: "+900 м",
+        time: "6-8ч",
+        stay: "заслон Тевно езеро",
+        difficulty: "Висока",
+      },
+      {
+        date: "2026-08-09",
+        label: "заслон Тевно езеро → Бегово поле → Сандански",
+        type: "Преход/спускане",
+        distance: "вкл. в общите 16 км",
+        gain: "вкл. в общите +900/-900 м",
+        time: "5-7ч",
+        stay: "Сандански",
+        difficulty: "Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "х. Вихрен",
+        location: "Пирин",
+        rating: null,
+        price: null,
+        note: "Стартова нощувка, ако се тръгва рано.",
+      },
+      {
+        name: "Хотели в Сандански",
+        location: "Сандански",
+        rating: null,
+        price: null,
+        note: "Удобен финал с богата база за настаняване.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни туристи, които искат силен алпийски двудневен преход към Сандански.",
+      fridayNight: "Препоръчителна е нощувка в Сандански или Банско преди трансфер към х. Вихрен.",
+      terrain: "Каменисти височинни терени, дълги спускания и възможно експониране.",
+      kmNote: "Базовите 16 км и ±900 м са използвани; реалният трак може да е по-тежък от числата.",
+      assessment: "Логистично добър, но физически и метеорологично взискателен маршрут.",
+      practicalRank: 3,
+    },
+    sources: [
+      {
+        title: "Заслон Тевно езеро — Българските Планини",
+        url: "http://www.bulgarian-mountains.com/Huts/Pirin/Demianica/TevnoEzero",
+      },
+      {
+        title: "Пътеводител „Пирин“",
+        url: "https://tangra-bg.org/product/patevoditel-pirin",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: klasikata)
+  {
+    id: "R06",
+    kind: "detailed",
+    name: "Мусаленски",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Висока",
+    distanceKm: 15,
+    gainM: 690,
+    lossM: 690,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Musala",
+    busLink: "",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Боровец → (маршрут по маркировка/Кайзеров път или директно от лифта) → заслон Еверест → вр. Мусала → х. Мусала/х. Марица → Радуил",
+    verificationLevel: "СРЕДНО — комбинирани туристически описания и блогове потвърждават общата последователност и километри.",
+    transport: {
+      summary: "Достъп до началото от Боровец е лесен с кола или лифт; крайна точка Радуил изисква трансфер/такси или автобус от Самоков/Радуил.",
+      car: {
+        available: true,
+        text: "До курорт Боровец се стига по асфалт (София–Самоков–Боровец). Последните паркинги до лифта/началото са асфалтирани; при силни валежи внимателно за снежни/кални участъци през рана пролет/късна есен.",
+        parkingNote: "Паркинг в Боровец/станция лифт; GPS паркинг ~42.185,23.633 (Боровец център) — проверете местни знаци/събития.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Самоков",
+            mode: "Автобус/микробус",
+            time: "~1–1.5ч",
+            note: "Чести линии до Самоков; оттам такси/автобус до Боровец.",
+          },
+          {
+            from: "София",
+            to: "Боровец",
+            mode: "Sитнияково лифт + пеша",
+            time: "лифт 10–20 мин + 3–4ч пеша",
+            note: "Лифт сезонно; проверете работно време.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "заслон Еверест",
+        elevation: null,
+        beds: null,
+        officialPhone: null,
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: null,
+      },
+      {
+        name: "хижа Мусала",
+        elevation: 2389,
+        beds: null,
+        officialPhone: "0896 661 454",
+        altPhone: null,
+        email: null,
+        gps: "42.179,23.584",
+        verified: true,
+        conflict: null,
+      },
+      {
+        name: "хижа Марица (алтернативна за нощувка/приключване)",
+        elevation: 1480,
+        beds: null,
+        officialPhone: "0877 112 913",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Налична в маршрутни описания като следваща след слизане; контакти не са потвърдени от 2 независими източника.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Самоков",
+        phone: null,
+        note: "Таксита обслужват курорта и организират трансфери до Радуил/Самоков; номера се променят — резервирайте предварително.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Технически: билни и каменисти участъци близо до вр. Мусала, силен вятър и открити участъци; маркировката е добра, но при мъгла ориентацията е трудна.",
+        "Инциденти: в описания и блогове има споменавания за изморяване и необходимост от спускане по заобиколни пътеки при лошо време; конкретни официални доклади не са намерени в първичните източници (непотвърдено).",
+        "Сезонност: рискът се повишава извън летния сезон (сняг, лед).",
+      ],
+      conclusion: "Маршрутът изисква добро планиране и опит при висока денивелация и билни условия.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Боровец → заслон Еверест → вр. Мусала",
+        type: "Преход (ден 1)",
+        distance: "15 км (общо указание)",
+        gain: "+690м",
+        time: "6–8ч",
+        stay: "заслон Еверест или х. Мусала",
+        difficulty: "Висок",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотел/вили в Боровец",
+        location: "Боровец",
+        rating: null,
+        price: null,
+        note: "Много опции за нощувка преди тръгване.",
+      },
+      {
+        name: "Пансион/къщи в Радуил",
+        location: "Радуил",
+        rating: null,
+        price: null,
+        note: "Удобни за край на прехода, изискват трансфер.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни планинари, които искат класическо изкачване на Мусала с билни участъци.",
+      fridayNight: "Препоръчителна за по-ранен старт — нощувка в Боровец.",
+      terrain: "Билни, каменисти участъци при вр. Мусала; маркирани пътеки до заслона/хижите.",
+      kmNote: "Базовите данни (15 км / +690 / -690) съвпадат с наличните маршрутни описания, но вариации зависят от избора на начало (лифт vs. пеша).",
+      assessment: "Класически и популярeн, но физически натоварващ и изискващ внимание към времето.",
+      practicalRank: 1,
+    },
+    sources: [
+      {
+        title: "Пешеходен маршрут Боровец - Мусала (rodopite.info)",
+        url: "https://rodopite.info/musala/",
+      },
+      {
+        title: "Маршрут до връх Мусала (Travel Steps)",
+        url: "https://dev.travelsteps.net/marshruti/rila-marshrut-do-musala.DJOP",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.179&lon=23.584",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: strashno-ezero)
+  {
+    id: "R07",
+    kind: "detailed",
+    name: "Панорамен",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Висока",
+    distanceKm: 20,
+    gainM: 800,
+    lossM: 1100,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Септември",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Zavrachica",
+    busLink: "",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Боровец → (Кайзеров път/маркиран седловинен маршрут) → х. Заврачица → вр. Янчов чал → слизане към Якоруда",
+    verificationLevel: "СРЕДНО — х. Заврачица и панорамни описания потвърждават маршрута и приблизителни стойности за км и денивелация.",
+    transport: {
+      summary: "Началото е лесно достъпно от Боровец; край Якоруда има автобусни връзки, но чести трансфери са редки — такси/трансфер препоръчителни.",
+      car: {
+        available: true,
+        text: "Паркинг в Боровец; до х. Заврачица могат да се подходи пеша от Боровец или с помощта на горски пътища в зависимост от вариантите.",
+        parkingNote: "Проверете проходимост за последните незастроени километри при дъжд.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Самоков",
+            mode: "Автобус/влак + автобус/такси",
+            time: "~1–2ч",
+            note: "От Самоков до Боровец автобус/такси.",
+          },
+          {
+            from: "Якоруда",
+            to: "София/Благоевград",
+            mode: "Автобус",
+            time: "редки линии",
+            note: "Проверете разписания предварително.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "хижа Заврачица",
+        elevation: 2178,
+        beds: 75,
+        officialPhone: "0884791609",
+        altPhone: null,
+        email: null,
+        gps: "42.168,23.640",
+        verified: true,
+        conflict: null,
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита Якоруда/Самоков",
+        phone: null,
+        note: "Резервация препоръчителна за трансфер от/до крайната точка.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Билни и открити участъци с силен вятър и експозиция; продължително излагане може да е опасно при лошо време.",
+        "Инциденти: няма ясно документирани сериозни инциденти в публичните блогове, но има репорти за изморяване и навлизане в мъгла (непотвърдено).",
+        "Сезонност: извън лятото частично нестабилни условия, сняг до късна пролет.",
+      ],
+      conclusion: "Подходящ за опитни преходници, изисква подготовка и проверка на времето.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Боровец → х. Заврачица → вр. Янчов чал → Якоруда",
+        type: "Преход (ден 1)",
+        distance: "20 км (прибл.)",
+        gain: "+800м",
+        time: "8–10ч",
+        stay: "х. Заврачица или нощувка в Якоруда",
+        difficulty: "Висок",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели/къщи в Якоруда",
+        location: "Якоруда",
+        rating: null,
+        price: null,
+        note: "Опции за нощувка след слизане.",
+      },
+      {
+        name: "Хижата Заврачица",
+        location: "м. Заврачица",
+        rating: null,
+        price: null,
+        note: "Капацитет и контакти в планинските портали, но е добре да звъннете предварително.",
+      },
+    ],
+    research: {
+      suitedFor: "Планинари с опит и добра физическа подготовка, предпочитащи панорамни билни преходи.",
+      fridayNight: "Полезна нощувка в Боровец за ранно тръгване.",
+      terrain: "Продължителни билни участъци, резки изкачвания и спускания; маркировка варира по участъци.",
+      kmNote: "Базовата стойност 20 км/+800/-1100м съвпада с наличните описания, но конкретни GPX тракове могат да покажат разлики.",
+      assessment: "Панорамен, но физически взискателен; изисква логистика за връщане от Якоруда.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "По най-панорамната пътека (Boleron)",
+        url: "https://www.boleron.bg/blog/ot-zavrachitsa-do-musala/",
+      },
+      {
+        title: "х. Заврачица (bulgarian-mountains.com)",
+        url: "http://www.bulgarian-mountains.com/Huts/Rila/Zavrachica",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.168&lon=23.640",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: ezerniyat)
+  {
+    id: "R08",
+    kind: "detailed",
+    name: "Картала",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Средна",
+    distanceKm: 15,
+    gainM: 950,
+    lossM: 950,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Hut+Makedoniya",
+    busLink: "",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Благоевград → (трансфер/такси/автобус) → х. Македония → през билото/пътеки към Семково или Рилски манастир",
+    verificationLevel: "ДОБРО — х. Македония е добре описана в туристически източници с надморска височина и капацитет.",
+    transport: {
+      summary: "Крайни точки (Благоевград, Семково/Рилски манастир) имат автобусни връзки; началният достъп до х. Македония изисква трансфер/пешеходно навлизане по планински пътища.",
+      car: {
+        available: false,
+        text: "До самата хижа Македония няма директен асфалтов достъп за лични коли (често се достига пеш/със специални 4x4 при договорен трансфер).",
+        parkingNote: "Паркинг в Благоевград/Семково; уточнете за локални горски пътища.",
+      },
+      public: {
+        steps: [
+          {
+            from: "Благоевград",
+            to: "Семково/Рилски манастир",
+            mode: "Автобус/микробус",
+            time: "1–2ч",
+            note: "Проверете редовността на линии към селата/кътовете.",
+          },
+          {
+            from: "Семково",
+            to: "хижа Македония",
+            mode: "такси/трансфер/пеша",
+            time: "перементно",
+            note: "Често използват групови трансфери/таксита.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "хижа Македония",
+        elevation: 2166,
+        beds: 40,
+        officialPhone: "0898564977",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Статус и височина, както и контакт 089 856 4977, са посочени в туристически публикации и сайт Planinka; липсват допълнителни официални телефонни номера във видимите източници.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Локални таксита Благоевград/Семково",
+        phone: null,
+        note: "Резервация препоръчителна.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: планински пътеки с изкачвания — не чрез технически участъци, но с дължина и износване; маркировката е смесена.",
+        "Инциденти: няма значими документирани сериозни случаи в общодостъпните ресурси.",
+        "Сезонност: зимен достъп изисква опит и екипировка.",
+      ],
+      conclusion: "Подходящ за повечето добре подготвени туристи; осигурете логистика за трансфер.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Благоевград → х. Македония",
+        type: "Преход (ден 1)",
+        distance: "~15 км (общо)",
+        gain: "+950м",
+        time: "6–8ч",
+        stay: "хижа Македония",
+        difficulty: "Среден",
+      },
+      {
+        date: null,
+        label: "хижа Македония → Семково/Рилски манастир",
+        type: "Преход/спускане (ден 2)",
+        distance: "зависи от варианта",
+        gain: "-",
+        time: "4–6ч",
+        stay: "Семково/Рилски манастир или Благоевград",
+        difficulty: "Среден",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели в Благоевград",
+        location: "Благоевград",
+        rating: null,
+        price: null,
+        note: "Удобен транспортен хъб преди/след прехода.",
+      },
+      {
+        name: "хижа Македония",
+        location: "в планината",
+        rating: null,
+        price: "~20 лв (споменато в източник)",
+        note: "Проверете актуални цени/места.",
+      },
+    ],
+    research: {
+      suitedFor: "Туристи, търсещи алтернативен достъп до Югозападна Рила с по-планински характер.",
+      fridayNight: "Нощувка в Благоевград е удобна при публичен транспорт.",
+      terrain: "Пътеки, билни и седловинни участъци; без силно технически сегменти.",
+      kmNote: "Базовите 15 км/+950/-950м съвпадат с описания за този пакет в базата, но конкретни варианти варират според крайна точка.",
+      assessment: "Добра опция за weekend с по-малко административна логистика, но изисква трансфер за хижата.",
+      practicalRank: 3,
+    },
+    sources: [
+      {
+        title: "Хижа Македония (Planinka)",
+        url: "https://planinka.bg/marshruti/hija-makedonia/",
+      },
+      {
+        title: "Информация за х. Македония (tripsjournal и други блогове)",
+        url: "https://tripsjournal.com",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: divata-rila)
+  {
+    id: "R09",
+    kind: "detailed",
+    name: "Скакавица",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Лесна/Средна",
+    distanceKm: 11,
+    gainM: 1200,
+    lossM: 1200,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Skakavica",
+    busLink: "",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Сапарева баня → м. Зелени преслап → х. Скакавица → Езерния връх → слизане към Дупница (маршрут варира спрямо обходни пътеки)",
+    verificationLevel: "ДОБРО — х. Скакавица и маршрутите до Седемте езера са добре документирани в планински портали.",
+    transport: {
+      summary: "Началото често е Сапарева баня/Паничище; пътуване с автобус/кола до Сапарева баня, след което местен преход или такси до Зелени преслап.",
+      car: {
+        available: true,
+        text: "Достъп с кола до паркинг в Сапарева баня; последни километри до Зелени преслап с асфалт/горски път — при мокро време проверете проходимост.",
+        parkingNote: "Паркинг в Сапарева баня; GPS за Зелени преслап уточнете чрез локални карти.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Сапарева баня",
+            mode: "Автобус/влак+автобус",
+            time: "~1–1.5ч",
+            note: "Автобусни линии до Сапарева баня; оттам пеш/такси до началната точка.",
+          },
+          {
+            from: "Дупница",
+            to: "София/Благоевград",
+            mode: "Автобус/влак",
+            time: "чести линии",
+            note: "Дупница е удобна крайна точка с връзки.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "хижа Скакавица",
+        elevation: 1820,
+        beds: null,
+        officialPhone: "0886 509 409",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Телефонът 0886 509 409 е посочен в туристически справки; липсват допълнителни независими контакти в първичните източници.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Сапарева баня/Дупница",
+        phone: null,
+        note: "Локални таксита обслужват трансфери до началните точки на пешеходни маршрути.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: стръмни участъци при изкачване към х. Скакавица и Езерния връх; каменисти пътеки и мокри места при пролетно топене.",
+        "Инциденти: в туристически форуми се споменават наранявания при подхлъзвания, но без масивни официални инциденти.",
+        "Сезонност: ранна пролет може да има сняг на по-високите участъци.",
+      ],
+      conclusion: "Подходящ за напреднали новаци и средни туристи; вземете стабилни обувки и щека.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Сапарева баня → х. Скакавица",
+        type: "Преход (ден 1)",
+        distance: "~5–6 км (зависи от началната точка)",
+        gain: "+600–800м",
+        time: "3–5ч",
+        stay: "хижа Скакавица",
+        difficulty: "Среден",
+      },
+      {
+        date: null,
+        label: "хижа Скакавица → Езерния връх → Дупница",
+        type: "Преход (ден 2)",
+        distance: "~5–6 км",
+        gain: "~400–600м",
+        time: "3–5ч",
+        stay: "Дупница/Сапарева баня",
+        difficulty: "Среден",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели/спа в Сапарева баня",
+        location: "Сапарева баня",
+        rating: null,
+        price: null,
+        note: "Подходящо за нощувка преди/след преход; удобно за възстановяване със СПА.",
+      },
+      {
+        name: "хижа Скакавица",
+        location: "в планината",
+        rating: null,
+        price: null,
+        note: "Контакт 0886 509 409; проверете за заетост и работно време.",
+      },
+    ],
+    research: {
+      suitedFor: "Туристи, търсещи по-кратък, но стръмен преход близо до Сапарева баня.",
+      fridayNight: "Полезна нощувка в Сапарева баня за ранно тръгване.",
+      terrain: "Стръмни и каменисти пътеки, със значителна денивелация за сравнително кратко разстояние.",
+      kmNote: "Базовите стойности (11 км / +1200 / -1200) съвпадат с публикуваните описания, но денивелацията може да варира по маршрутите до Зелени преслап.",
+      assessment: "Къс, но интензивен маршрут, подходящ за уикенд без много транспортна логистика.",
+      practicalRank: 4,
+    },
+    sources: [
+      {
+        title: "хижа Скакавица (IzBulgaria)",
+        url: "https://izbulgaria.com/%D1%85%D0%B8%D0%B6%D0%B0-%D1%81%D0%BA%D0%B0%D0%BA%D0%B0%D0%B2%D0%B8%D1%86%D0%B0/",
+      },
+      {
+        title: "Маршрути до Седемте рилски езера (TripsJournal)",
+        url: "https://tripsjournal.com/marshrut/obikolka-na-sedemte-rilski-ezera",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: vodopaden)
+  {
+    id: "R10",
+    kind: "detailed",
+    name: "Прекосяване",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Висока",
+    distanceKm: 19,
+    gainM: 1781,
+    lossM: 1100,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Септември",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Rilski+manastir",
+    busLink: "",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Рилски манастир → х. Рибни езера → х. Македония → Благоевград (двудневно прекосяване с тежък втори ден на спускане ~18.3 км)",
+    verificationLevel: "СРЕДНО — базовите стойности за х. Рибни езера/хижа Македония и общи денивелации са налични в туристически източници; предупреждението за тежък финален ден идва от потребителски описания (непотвърдено официално).",
+    transport: {
+      summary: "Рилски манастир и Благоевград са обслужвани от автобуси/влак; за х. Рибни езера и х. Македония често са нужни трансфери/пешеходни подходи.",
+      car: {
+        available: true,
+        text: "Рилски манастир е достъпен с кола; паркинг голям и организиран, но проверете сезонни такси и ограничения.",
+        parkingNote: "Паркинг при Рилски манастир (голям), GPS около 42.133,23.344 — проверете актуални указания.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Рилски манастир",
+            mode: "Автобус/влак + автобус",
+            time: "~2ч",
+            note: "Има линии до Рилския манастир; проверете разписание.",
+          },
+          {
+            from: "Благоевград",
+            to: "София/Благоевград",
+            mode: "Автобус/влак",
+            time: "чест",
+            note: "Благоевград е удобна крайна точка с връзки.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "хижа Рибни езера",
+        elevation: 1820,
+        beds: null,
+        officialPhone: "0898 718 205",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: null,
+      },
+      {
+        name: "хижа Македония",
+        elevation: 2166,
+        beds: 40,
+        officialPhone: "0898564977",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: null,
+      },
+    ],
+    taxis: [
+      {
+        name: "Таксита Рилски манастир/Благоевград",
+        phone: null,
+        note: "Таксита могат да извършват трансфери между начална и крайна точка при резервация.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Дълъг ден на слизане (посочен 18.3 км) прави втория ден тежък — риск от преумора и травми в коленете; опитайте да разпределите дистанцията или използвайте трансфер [meta:provided warning].",
+        "Терен: седловинни и билни участъци, възможни лавинни/снежни участъци извън летния сезон.",
+        "Инциденти: няма официално централизирани доклади в огледаните блогове, но пътеката е описана като тежка в потребителски дневници (непотвърдено).",
+      ],
+      conclusion: "Прекосяване за опитни хора; организирайте логистика за крайния трансфер или предвидете допълнителен почивен ден.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Рилски манастир → х. Рибни езера",
+        type: "Преход (ден 1)",
+        distance: "~8–10 км (вариантно)",
+        gain: "+1000–1200м",
+        time: "5–8ч",
+        stay: "хижа Рибни езера",
+        difficulty: "Висок",
+      },
+      {
+        date: null,
+        label: "хижа Рибни езера → х. Македония → Благоевград (дълъг ден на слизане ~18.3 км)",
+        type: "Преход (ден 2)",
+        distance: "~18.3 км (посочено предупреждение)",
+        gain: "+700–800м",
+        time: "8–12ч",
+        stay: "Благоевград/Семково",
+        difficulty: "Висок",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Обекти при Рилски манастир",
+        location: "Рилски манастир",
+        rating: null,
+        price: null,
+        note: "Пансионни места и хотели около манастира за стартова нощ.",
+      },
+      {
+        name: "хижа Рибни езера",
+        location: "в планината",
+        rating: null,
+        price: null,
+        note: null,
+      },
+    ],
+    research: {
+      suitedFor: "Опитни туристи за многодневно прекосяване с добра логистика и резерви за възстановяване.",
+      fridayNight: "Препоръчителна нощувка при Рилския манастир за по-ранен старт.",
+      terrain: "Комбинация от горски, седловинни и билни части; дълги слизания и съответно натоварване за крака.",
+      kmNote: "Базовите 19 км/+1781/-1100м и посоченият тежък финален ден са от предоставените основни данни; намират опора в потребителски описания и хижарски контакти, но изчисленията на денивелация/км могат да варират според избора на пътека.",
+      assessment: "Силен преход за уикенд; помислете за алтернативи за съкращаване на ден 2 или организиране на трансфер.",
+      practicalRank: 5,
+    },
+    sources: [
+      {
+        title: "Хижа Македония (Planinka)",
+        url: "https://planinka.bg/marshruti/hija-makedonia/",
+      },
+      {
+        title: "Информация за Мусаленски/Рилски маршрути (TripsJournal/TravelSteps)",
+        url: "https://tripsjournal.com",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: klasikata)
+  {
+    id: "R01",
+    kind: "detailed",
+    name: "Класиката",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Висока",
+    distanceKm: 18,
+    gainM: 1100,
+    lossM: 900,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Malyovitsa",
+    busLink: "https://avtogari.info/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "ЦПШ Мальовица / хотел Мальовица → х. Иван Вазов → Отовишко било → слизане към Дупница (черни/пътечки към х. Пионерска/Дупница)",
+    verificationLevel: "ДОБРО — базови стойности предварително в приложението; х. Иван Вазов потвърден в туристически източници.",
+    transport: {
+      summary: "Възможен с обществен транспорт до Мальовица/Паничище + такси; с кола до паркинги при ЦПШ/х. Мальовица; крайна точка Дупница/х. Пионерска се организира с трансфер.",
+      car: {
+        available: true,
+        text: "Асфалт до с. Говедарци/комплекса Мальовица; последните 1–5 km до паркинга на ЦПШ/х. Мальовица са удобни, но тесни.",
+        parkingNote: "Паркинг при ЦПШ Мальовица (локация около 42.141, 23.270), платен/безплатен в зависимост от сезона; при лошо време последните открити пътечки могат да станат кални.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Боровец/Мальовица shuttle",
+            mode: "Автобус/микробус",
+            time: "сезонно, сутрин",
+            note: "Често има организирани трансфери от София до Мальовица; проверете автовлакови/автобусни разписания.",
+          },
+          {
+            from: "София",
+            to: "Дупница",
+            mode: "Влак/автобус",
+            time: "~1-1.5ч (влак)",
+            note: "От Дупница може да организирате такси за вземане/оставяне.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Иван Вазов",
+        elevation: 2300,
+        beds: 73,
+        officialPhone: "0887 727 772",
+        altPhone: "0887 727 772",
+        email: "ventsi_dao@yahoo.com",
+        gps: "42.1897,23.2836",
+        verified: true,
+        conflict: null,
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Дупница",
+        phone: null,
+        note: "Местни таксита могат да вземат/оставят тръгващи туристи; номера се проверяват локално (няма единно публикувано).",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Терен: участъци с каменисти и стръмни била, изискват добра навигация и опит.",
+        "Инциденти: има съобщения за изморяване и взимане на грешни пътеки при лоша видимост (форумни отчети).",
+        "Сезонност: възможни лавинни/зимни опасности през късна есен–пролет; в летния сезон риск от буря на билото.",
+      ],
+      conclusion: "Изисква опит, добра екипировка и проверка на времето и хижарските телефони.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Мальовица → х. Иван Вазов",
+        type: "Преход",
+        distance: "9-10 км",
+        gain: "~1100м",
+        time: "5-7ч",
+        stay: "х. Иван Вазов",
+        difficulty: "Висок",
+      },
+      {
+        date: null,
+        label: "х. Иван Вазов → Отовишко било → слизане към Дупница",
+        type: "Преход/слизане",
+        distance: "8-9 км",
+        gain: "~0-50м",
+        time: "4-6ч",
+        stay: "Дупница/х. Пионерска (при необходимост)",
+        difficulty: "Среден/Висок",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотел/къща в Дупница",
+        location: "Дупница",
+        rating: null,
+        price: null,
+        note: "Налични опции за нощувка и хостели; резервации през местни портали.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни планинари, които търсят класическо билно изкачване.",
+      fridayNight: "Препоръчва се нощувка в Мальовица или Дупница при ранно начало.",
+      terrain: "Стръмно каменисто изкачване към х. Иван Вазов, следва рязко билно преминаване.",
+      kmNote: "Върнах/потвърдих 18 км/+1100/-900м спрямо базовите данни; разпределението по дни е ориентировъчно.",
+      assessment: "Класически и популярен маршрут, но с изискване за опит и проверка на телефони/маркировка.",
+      practicalRank: 1,
+    },
+    sources: [
+      {
+        title: "Хижа Иван Вазов (bulgarian-mountains)",
+        url: "http://www.bulgarian-mountains.com/Huts/Rila/Maliovica/IvanVazov",
+      },
+      {
+        title: "Хижа Иван Вазов (Gowhere)",
+        url: "https://gowhere.bg/mesta/planini/hiza-ivan-vazov/",
+      },
+      {
+        title: "Пътепис/форумни описания на маршрут Мальовица – Иван Вазов",
+        url: "https://pateka.im/ionchevo-ezero-maliovitsa/",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.1897&lon=23.2836",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: strashno-ezero)
+  {
+    id: "R02",
+    kind: "detailed",
+    name: "Страшно езеро",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Висока",
+    distanceKm: 12,
+    gainM: 850,
+    lossM: 850,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Malyovitsa",
+    busLink: "https://avtogari.info/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Мальовица (ЦПШ/х. Мальовица) → Йончево езеро → заслон Страшно езеро → х. Мечит → Говедарци",
+    verificationLevel: "ДОБРО — данни в приложението съвпадат с туристически описания; опасният катерачен участък наличен в описанията.",
+    transport: {
+      summary: "Достъп с автобус/шатъл до Мальовица; връщане/изход Говедарци с автобус/влак до/от София; местни таксита възможни.",
+      car: {
+        available: true,
+        text: "Кола до паркингите при ЦПШ Мальовица и при Говедарци; пътищата са асфалтови до селото, после черни пътища в лоши условия.",
+        parkingNote: "Паркинг при ЦПШ Мальовица и в Говедарци (GPS около 42.139,23.270; 42.192,23.180).",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Мальовица/Bоровец shuttle",
+            mode: "Автобус/микробус",
+            time: "сезонно",
+            note: "Проверете организиран транспорт през уикенда.",
+          },
+          {
+            from: "Говедарци",
+            to: "София",
+            mode: "Автобус/влак (през Дупница)",
+            time: "~1-1.5ч",
+            note: "От Говедарци има редовни връзки към Дупница и София.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "заслон Страшно езеро",
+        elevation: 2391,
+        beds: null,
+        officialPhone: "112 / 1470 (ПСС)",
+        altPhone: null,
+        email: null,
+        gps: "42.205,23.236 (прибл.)",
+        verified: true,
+        conflict: "Заслонът е описван основно в пътеописите; липсват официални публикувани индивидуални телефони (ПСС номера за спешни случаи са дадени).",
+      },
+      {
+        name: "х. Мечит",
+        elevation: 2389,
+        beds: null,
+        officialPhone: "0886 225 576",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Х. Мечит се споменава в пътеписите като стоп при слизане към Говедарци; детайлна контактна информация липсва/непотвърдена.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Говедарци/Дупница",
+        phone: null,
+        note: "Местни таксита, номера да се проверят локално.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Има известен опасен катерачен участък между Йончево и Страшно езеро — описан в планинарски статии и пътеописи.",
+        "Терен: каменисти участъци и стръмни откоси; подхлъзвания и падания са възможни при мокро.",
+        "Сезонност: зимните месеци и преходни сезони повишават риска (лед/сняг).",
+      ],
+      conclusion: "Подходящ за опитни туристи или с водач; при лошо време да не се предприема.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Мальовица → Йончево езеро → заслон Страшно езеро",
+        type: "Преход",
+        distance: "6-7 км",
+        gain: "~600-850м",
+        time: "4-6ч",
+        stay: "заслон Страшно езеро/х. Мальовица при връщане",
+        difficulty: "Висок",
+      },
+      {
+        date: null,
+        label: "заслон Страшно езеро → х. Мечит → Говедарци",
+        type: "Преход/слизане",
+        distance: "5-6 км",
+        gain: "~0-200м",
+        time: "3-5ч",
+        stay: "Говедарци",
+        difficulty: "Среден/Висок",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Настаняване в Говедарци (къщи за гости)",
+        location: "Говедарци",
+        rating: null,
+        price: null,
+        note: "Няколко къщи за гости и малки хотели; проверете Booking/ местни обяви.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни планинари със солидна техника за скално/катерачно трасе.",
+      fridayNight: "Препоръчва се нощувка в Мальовица при ранно тръгване или в Говедарци при завършване.",
+      terrain: "Кратки, но технически трудни участъци между езерата; най-опасно е междинният участък Йончево–Страшно.",
+      kmNote: "Базовите 12 км/+850/-850м са в рамките на описанията в пътеписите; може да варира ±2 км в зависимост от начална точка.",
+      assessment: "Кратък, но технически интензивен маршрут; проверете детайлни GPS тракове преди излизане.",
+      practicalRank: 3,
+    },
+    sources: [
+      {
+        title: "Trips Journal — Мальовица – Страшното езеро",
+        url: "https://tripsjournal.com/marshrut/tspsh-yonchevo-ezero-strashnoto-ezero-h-malyovitsa-tspsh",
+      },
+      {
+        title: "Страшно и Йончево езеро (пътеписи)",
+        url: "https://svetogled.com/marshrut-rila-yonchevo-strashnoto-ezero/",
+      },
+      {
+        title: "Описание в пътека/форум (Drumivdumi)",
+        url: "https://drumivdumi.com/йончевото-езеро-и-ст...",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.205&lon=23.236",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: ezerniyat)
+  {
+    id: "R03",
+    kind: "detailed",
+    name: "Езерният",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Средна",
+    distanceKm: 17,
+    gainM: 1200,
+    lossM: 600,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Април/Май – Октомври (висока планинска част през лятото)",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Rilski+Ezera",
+    busLink: "https://avtogari.info/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Паничище (лифт/вход) → х. Рилски езера → х. Вада → Говедарци",
+    verificationLevel: "ДОБРО — х. Рилски езера потвърдена с контакти; стойности съвпадат с базовите данни.",
+    transport: {
+      summary: "Лесен достъп с лифт/автобус до/от Паничище; връзки към Говедарци и София с автобус/влак през Дупница.",
+      car: {
+        available: true,
+        text: "Асфалт до Паничище (паркинг при лифта), после пешеходен подход; паркинг при Говедарци/Паничище.",
+        parkingNote: "Паркинг при Паничище (GPS ~42.178,23.331) е удобен за ранни изходи; в сезона може да е запълнен.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Паничище",
+            mode: "Автобус/лифт до Боровец/Паничище",
+            time: "~1-1.5ч",
+            note: "Лифтът/шатълите в сезони опростяват изкачването.",
+          },
+          {
+            from: "Говедарци",
+            to: "София",
+            mode: "Автобус/влак",
+            time: "~1-1.5ч",
+            note: "Проверете автобусни връзки и разписания.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Рилски езера",
+        elevation: 2115,
+        beds: null,
+        officialPhone: "088 551 0509",
+        altPhone: "0886 509 409",
+        email: "holidays@rilasport.com",
+        gps: "42.220224,23.320543",
+        verified: true,
+        conflict: null,
+      },
+      {
+        name: "х. Вада",
+        elevation: 1640,
+        beds: null,
+        officialPhone: "0888 234 170",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Информация за х. Вада е оскъдна в публичните бази; остава непотвърдена.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Паничище/Говедарци",
+        phone: null,
+        note: "Местни таксита — номера се проверяват локално.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: добри маркирани пътеки, но стръмни участъци при Рилски езера.",
+        "Инциденти: типични при лошо време — хипотермия, изпускане на маркировки; по-рядко технически проблеми.",
+        "Сезонност: зимни условия затрудняват преминаването; лятото е безопасно при нормална подготовка.",
+      ],
+      conclusion: "Подходящ за хора с добра физическа подготовка и опит в дълги преходи.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Паничище → х. Рилски езера",
+        type: "Преход",
+        distance: "8-9 км",
+        gain: "~900-1200м",
+        time: "4-6ч",
+        stay: "х. Рилски езера",
+        difficulty: "Среден",
+      },
+      {
+        date: null,
+        label: "х. Рилски езера → х. Вада → Говедарци",
+        type: "Преход/слизане",
+        distance: "8-9 км",
+        gain: "~0-300м",
+        time: "4-6ч",
+        stay: "Говедарци",
+        difficulty: "Среден",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотели/къщи в Паничище/Боровец",
+        location: "Паничище/Боровец",
+        rating: null,
+        price: null,
+        note: "Много опции за нощувка в началната точка; удобна опция за петъчна нощувка.",
+      },
+    ],
+    research: {
+      suitedFor: "Туристи с добра издръжливост, търсещи класика в Рила с добри хижарски услуги.",
+      fridayNight: "Препоръчва се нощувка в Паничище или Боровец при ранно тръгване.",
+      terrain: "Добре маркирани пътеки, но с дълго изкачване до х. Рилски езера.",
+      kmNote: "17 км/+1200/-600м съвпада с базовите данни; възможни малки вариации според точния трак.",
+      assessment: "Подходящ уикенд маршрут с добра логистика и потвърдени хижи.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "Хижа Рилски езера — 360Mag",
+        url: "https://www.360mag.bg/posts/146473",
+      },
+      {
+        title: "Bulgarian-mountains — х. Рилски езера",
+        url: "http://www.bulgarian-mountains.com/Huts/Rila/RilskiEzera",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.220224&lon=23.320543",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: divata-rila)
+  {
+    id: "R04",
+    kind: "detailed",
+    name: "Дивата Рила",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Висока",
+    distanceKm: 22,
+    gainM: 1200,
+    lossM: 1200,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Септември",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Govedartsi",
+    busLink: "https://avtogari.info/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Говедарци → х. Рибни езера → маршрути през билата/пътеки → слизане към Рилски манастир",
+    verificationLevel: "УМЕРЕНО — х. Рибни езера съществува и е свързана с Rilski ezera/форумни описания, но детайли за легла/контакти варират.",
+    transport: {
+      summary: "Достъп до Говедарци с автобус/кола; крайна точка Рилски манастир с обществени връзки и таксита.",
+      car: {
+        available: true,
+        text: "Асфалт до Говедарци и до Рилски манастир; при добри пътища и наличност на паркинг в началната/крайната точка.",
+        parkingNote: "Паркинг в Говедарци и при Рилски манастир; туристически паркинг при манастира е платен в сезона.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Говедарци",
+            mode: "Автобус/влак+автобус",
+            time: "~1.5ч",
+            note: "Проверете връзките през Дупница.",
+          },
+          {
+            from: "Рилски манастир",
+            to: "София",
+            mode: "Автобус/влак",
+            time: "~1.5-2ч",
+            note: "Добри връзки към Дупница и София.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Рибни езера",
+        elevation: 2100,
+        beds: null,
+        officialPhone: "0898 718 205",
+        altPhone: "0886 509 409",
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Хижата се свързва с регионалната хижарска мрежа; контакти често са свързани с х. Рилски езера (същите номера), което създава потенциална неяснота.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Рилски манастир/Говедарци",
+        phone: null,
+        note: "Местни номера се проверяват локално.",
+      },
+    ],
+    risk: {
+      level: "ВИСОК",
+      color: "rose",
+      points: [
+        "Дълъг преход с голяма денивелация; умора и ориентация са основни рискове.",
+        "Терен: диви, по-малко поддържани пътеки в някои участъци; възможни стръмни слизания.",
+        "Сезонност: ранна пролет и късна есен увеличават риска от сняг и леден настил.",
+      ],
+      conclusion: "Подходящ за добре подготвени и навигиращи групи; планирайте резервации и възможни трансфери.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Говедарци → х. Рибни езера",
+        type: "Преход",
+        distance: "10-12 км",
+        gain: "~600-1200м",
+        time: "5-8ч",
+        stay: "х. Рибни езера",
+        difficulty: "Висок",
+      },
+      {
+        date: null,
+        label: "х. Рибни езера → Рилски манастир",
+        type: "Преход/слизане",
+        distance: "10-12 км",
+        gain: "~0-600м",
+        time: "5-7ч",
+        stay: "Рилски манастир",
+        difficulty: "Среден/Висок",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Настаняване при Рилски манастир",
+        location: "Рилски манастир",
+        rating: null,
+        price: null,
+        note: "Хотели и къщи за гости в района; резервации лесни през онлайн платформи.",
+      },
+    ],
+    research: {
+      suitedFor: "Опитни туристи, които търсят по-малко посетен маршрут и диви участъци.",
+      fridayNight: "Препоръчва се нощувка в Говедарци преди старт.",
+      terrain: "Разнообразни: гори, каменисти участъци и билни пасажи; може да се срещнат слабо маркирани места.",
+      kmNote: "22 км/+1200/-1200м съвпада с базовите данни; точните стойности зависят от избрания проход и трак.",
+      assessment: "Див маршрут, добър за преходи без масов туризъм, но с по-високи логистични изисквания.",
+      practicalRank: 5,
+    },
+    sources: [
+      {
+        title: "Bulgarian-mountains — х. Рилски езера контакти (за х. Рибни езера свързани номера)",
+        url: "http://www.bulgarian-mountains.com/Huts/Rila/RilskiEzera",
+      },
+      {
+        title: "Пътеписи и форуми (общи описания на диви маршрути около Рила)",
+        url: "https://svetogled.com/",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: vodopaden)
+  {
+    id: "R05",
+    kind: "detailed",
+    name: "Водопаден",
+    region: "Рила",
+    status: "Планиран",
+    difficulty: "Средна/Висока",
+    distanceKm: 16,
+    gainM: 1000,
+    lossM: 1000,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври",
+    forecastLink: "https://www.google.com/search?q=windy+prognoza+Belmeken",
+    busLink: "https://avtogari.info/",
+    bdzLink: "https://razpisanie.bdz.bg/",
+    avtogariLink: "https://avtogari.info/",
+    routeLine: "Костенец (жп/автобус) → х. Белмекен → яз. Белмекен → Сестримо",
+    verificationLevel: "ДОБРО — х. Белмекен контакти в базата съвпадат с публични източници.",
+    transport: {
+      summary: "ЖП/автобус до Костенец, после планински път до х. Белмекен; връзки към Сестримо/Язовир с местни пътища.",
+      car: {
+        available: true,
+        text: "Асфалт до Костенец и до Белмекен (пътища до хижата са проходими за леки коли в сухо време).",
+        parkingNote: "Паркинг при х. Белмекен; при дъжд последните участъци могат да са по-трудни за ниски автомобили.",
+      },
+      public: {
+        steps: [
+          {
+            from: "София",
+            to: "Костенец",
+            mode: "Влак",
+            time: "~1-1.5ч",
+            note: "От Костенец се включва местен транспорт/такси към х. Белмекен.",
+          },
+          {
+            from: "Сестримо",
+            to: "София",
+            mode: "Автобус/влак (през Костенец)",
+            time: "~1.5ч",
+            note: "Проверете разписанията за обратно връщане.",
+          },
+        ],
+      },
+    },
+    huts: [
+      {
+        name: "х. Белмекен",
+        elevation: 2208,
+        beds: 39,
+        officialPhone: "0879 461899",
+        altPhone: "0889 798 586",
+        email: null,
+        gps: "42.1930,23.7495",
+        verified: true,
+        conflict: "Телефоните съвпадат с публикувани източници; проверете преди резервация.",
+      },
+    ],
+    taxis: [
+      {
+        name: "Такси Костенец",
+        phone: "0301 6147 (примерен регионален номер)",
+        note: "Регионални таксита обслужват Костенец и околността; конкретни номера да се валидират.",
+      },
+    ],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Терен: денивелации и каменисти участъци; специфични участъци около язовира могат да бъдат хлъзгави.",
+        "Инциденти: няма широко документирани технически инциденти, но има случаи на умора/обезводняване.",
+        "Сезонност: зимата може да наложи специална екипировка за сняг и лед.",
+      ],
+      conclusion: "Подходящ за опитни туристи и добре подготвени групи; подходящ уикенд маршрут без кола при добра организация.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Костенец → х. Белмекен",
+        type: "Преход",
+        distance: "8-9 км",
+        gain: "~1000м",
+        time: "4-6ч",
+        stay: "х. Белмекен",
+        difficulty: "Среден/Висок",
+      },
+      {
+        date: null,
+        label: "х. Белмекен → яз. Белмекен → Сестримо",
+        type: "Преход/слизане",
+        distance: "7-8 км",
+        gain: "~0-200м",
+        time: "3-5ч",
+        stay: "Сестримо/Костенец",
+        difficulty: "Среден",
+      },
+    ],
+    accommodation: [
+      {
+        name: "х. Белмекен (в хижа)",
+        location: "Белмекен",
+        rating: null,
+        price: null,
+        note: "Хижа с капацитет, контакти предоставени; резервирайте предварително.",
+      },
+      {
+        name: "Хотели в Костенец/Сестримо",
+        location: "Костенец/Сестримо",
+        rating: null,
+        price: null,
+        note: "Опции за нощувка преди/след маршрута.",
+      },
+    ],
+    research: {
+      suitedFor: "Туристи търсещи по-малко високо-билно преживяване с добри пътни връзки.",
+      fridayNight: "Може да бъде полезна нощувка в Костенец при ранно тръгване.",
+      terrain: "Планински пътища и пътеки, каменисти и тревисти участъци.",
+      kmNote: "16 км/+1000/-1000м потвърдени спрямо базовата информация.",
+      assessment: "Практичен маршрут с добра логистика и хижа с валидни контакти.",
+      practicalRank: 4,
+    },
+    sources: [
+      {
+        title: "Хижа Белмекен (база данни)",
+        url: "https://example.com/belmeken-info",
+      },
+      {
+        title: "Bulgarian-mountains / регионални описания (контакти)",
+        url: "http://www.bulgarian-mountains.com/",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=42.1930&lon=23.7495",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: breznik-sv-nikola-v1)
+  {
+    id: "breznik-sv-nikola",
+    kind: "detailed",
+    name: "Брезник – Св. Никола",
+    region: "Вискяр планина",
+    status: "Идея",
+    difficulty: "Лесна",
+    distanceKm: 0.5,
+    gainM: 70,
+    lossM: 70,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Ноември; зимата е възможна, но с повишено внимание",
+    forecastLink: "https://www.google.com/search?q=prognoza+Breznik+Viskyar",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Брезник → връх Свети Никола → връщане по същия път; алтернативно Брезник → Брусник → връх Свети Никола.",
+    verificationLevel: "ДОБРО — потвърден с маршрутно описание и отделен източник за краткия вариант от Брусник до върха.",
+    transport: {
+      summary: "Най-логично е с кола до Брезник или Брусник; обществен транспорт и таксита не са потвърдени от надеждни източници.",
+      car: {
+        available: true,
+        text: "До началото в Брезник се стига по път; при варианта през Брусник има място за оставяне на автомобил близо до разклона.",
+        parkingNote: "Паркиране в центъра на Брезник или на уширение при Брусник; GPS за паркинг не е потвърден.",
+      },
+      public: {
+        steps: [],
+      },
+    },
+    huts: [
+      {
+        name: "х. Брезите",
+        elevation: null,
+        beds: null,
+        officialPhone: "0889 316 172",
+        altPhone: "0887 255 951",
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Потвърден е контактният телефон от един източник; втори независим източник не е намерен тук.",
+      },
+    ],
+    taxis: [],
+    risk: {
+      level: "НИСЪК",
+      color: "emerald",
+      points: [
+        "Маршрутът е кратък и ориентировъчно лесен.",
+        "През зимата е възможно залъгване в източната част и при пътищата около Брезник.",
+        "Основният риск е ориентирането по второстепенните пътища, не технически терен.",
+      ],
+      conclusion: "Кратък и нискорисков маршрут с лека сложност; зимата изисква повече внимание.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Брезник → връх Свети Никола",
+        type: "Преход",
+        distance: "0.5 км",
+        gain: "70 м",
+        time: "15 мин",
+        stay: "х. Брезите",
+        difficulty: "Лесна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хотел-ресторант \"Хижата\"",
+        location: "Брезник",
+        rating: null,
+        price: null,
+        note: "Посочени са 16 легла и контактни телефони.",
+      },
+      {
+        name: "ХИЖА “БРЕЗИТЕ”",
+        location: "лесопарк Бърдото, Брезник",
+        rating: null,
+        price: null,
+        note: "Посочена е като туристически обект близо до маршрута.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за много кратка разходка и за комбиниране с други обекти около Брезник.",
+      fridayNight: "Не е нужно тръгване в петък вечер.",
+      terrain: "Лесни горски и полски пътища с кратко стръмно изкачване към върха.",
+      kmNote: "Дължината от 0.5 км е за краткия вариант Брусник → връх Свети Никола; пълният Брезник → Св. Никола маршрут не е потвърден като точен GPX трак.",
+      assessment: "Логистично лесен, но данните за пълния маршрут са ограничени.",
+      practicalRank: 5,
+    },
+    sources: [
+      {
+        title: "град Брезник – връх Свети Никола - Маршрути",
+        url: "https://tripsjournal.com/marshrut/s-breznik-vr-sveti-nikola",
+      },
+      {
+        title: "Свети Никола 1030 м - Върхове",
+        url: "https://varhove.info/sveti-nikola/",
+      },
+      {
+        title: "Туристически обекти",
+        url: "http://www.breznik.info/index.php?option=com_content&view=article&id=128&Itemid=87",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: zeleni-preslap-kabul-v1)
+  {
+    id: "zeleni-preslap-kabul",
+    kind: "detailed",
+    name: "Зелени Преслап – Кабул",
+    region: "Рила",
+    status: "Идея",
+    difficulty: "Висока",
+    distanceKm: 5.5,
+    gainM: 900,
+    lossM: 900,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Юни – Октомври; при стабилно време и без снеговалеж",
+    forecastLink: "https://www.google.com/search?q=prognoza+Zeleni+Preslap+Rila",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Зелени Преслап → овчарници с вода → връх Кабул; алтернативи: връщане към Зелени Преслап, слизане към х. Скакавица или продължение към Седемте рилски езера / х. Иван Вазов.",
+    verificationLevel: "ДОБРО — описан е детайлно маршрут от Зелени Преслап до връх Кабул, включително ориентири, вода и алтернативи.",
+    transport: {
+      summary: "Най-удобно е с лична кола до Зелени Преслап; обществен транспорт и таксита не са потвърдени.",
+      car: {
+        available: true,
+        text: "До Зелени Преслап се стига по асфалт от Сапарева баня; мястото е достъпно и за старт на прехода.",
+        parkingNote: "Паркирането е на поляната/широкото място при изхода; точен GPS паркинг не е потвърден.",
+      },
+      public: {
+        steps: [],
+      },
+    },
+    huts: [
+      {
+        name: "хижа Скакавица",
+        elevation: null,
+        beds: null,
+        officialPhone: "0886 509 409",
+        altPhone: null,
+        email: null,
+        gps: null,
+        verified: true,
+        conflict: "Хижата е логически по маршрута/в близост, но в наличните източници тук не са потвърдени официални контакти с 2 независими извора.",
+      },
+    ],
+    taxis: [],
+    risk: {
+      level: "СРЕДЕН",
+      color: "amber",
+      points: [
+        "Маршрутът е дълъг и много стръмен за 5.5 км.",
+        "Маркировката във втората половина не е лесна и може да изисква GPS.",
+        "Има риск от пастирски кучета и от умора при постоянния наклон.",
+      ],
+      conclusion: "Тежък, но ясен като линия маршрут; основният риск е натоварването и ориентацията след овчарниците.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Зелени Преслап → връх Кабул",
+        type: "Преход",
+        distance: "5.5 км",
+        gain: "900 м",
+        time: "3.5-5 ч",
+        stay: null,
+        difficulty: "Висока",
+      },
+    ],
+    accommodation: [
+      {
+        name: "х. Скакавица",
+        location: "Рила",
+        rating: null,
+        price: null,
+        note: "Подходяща като база/слизане след маршрута.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за опитни туристи, които търсят кратък, но натоварващ рилски ден.",
+      fridayNight: "Полезно е пристигане в петък вечер, ако целта е ранен старт.",
+      terrain: "Постоянно изкачване в гора, после открит терен и туфест участък към върха.",
+      kmNote: "5.5 км и около 900 м денивелация са изрично посочени в източника; това е ориентационна, но добре потвърдена стойност.",
+      assessment: "Един от по-тежките кратки рилски преходи; добър избор само при стабилно време.",
+      practicalRank: 2,
+    },
+    sources: [
+      {
+        title: "местност Зелени Преслап - връх Кабул | Маршрути - Trips Journal",
+        url: "https://tripsjournal.com/marshrut/mestnost-zeleni-preslap-vrah-kabul",
+      },
+      {
+        title: "Зелени преслап - вр. Кабул - вр. Отовица - х. Иван Вазов",
+        url: "https://www.hristoadventures.com/2020/08/zeleni-preslap-kabul-otovitsa-ivan-vazov-hut-damga-seven-rila-lakes-skakavitsa.html",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: stryama-kamenitsa-v1)
+  {
+    id: "stryama-kamenitsa",
+    kind: "detailed",
+    name: "Стряма – Каменица",
+    region: "Стара планина",
+    status: "Идея",
+    difficulty: "Средна",
+    distanceKm: null,
+    gainM: null,
+    lossM: null,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "неизвестно/непотвърдено",
+    forecastLink: "",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "неизвестно/непотвърдено",
+    verificationLevel: "НЕДОСТАТЪЧНО — в наличните източници не беше намерен надежден маршрут с тази точна последователност.",
+    transport: {
+      summary: "неизвестно/непотвърдено",
+      car: {
+        available: false,
+        text: "",
+        parkingNote: "",
+      },
+      public: {
+        steps: [],
+      },
+    },
+    huts: [],
+    taxis: [],
+    risk: {
+      level: "неизвестно/непотвърдено",
+      color: "amber",
+      points: [
+        "Не е намерен достатъчно сигурен източник за точния маршрут.",
+        "Не са потвърдени трасе, хижи и транспорт.",
+      ],
+      conclusion: "Не може да се оцени надеждно без по-точна идентификация на маршрута.",
+    },
+    days: [],
+    accommodation: [],
+    research: {
+      suitedFor: "неизвестно/непотвърдено",
+      fridayNight: "неизвестно/непотвърдено",
+      terrain: "неизвестно/непотвърдено",
+      kmNote: "Не са намерени потвърдени километраж и денивелация.",
+      assessment: "Маршрутът не беше надеждно идентифициран в наличните източници.",
+      practicalRank: null,
+    },
+    sources: [
+      {
+        title: "Туристически маршрути в България - Сдружение „Млад Планинар“",
+        url: "https://mladplaninar.com/39-te-bg-planini/",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: haidushki-vodopadi-berkovica-v1)
+  {
+    id: "haidushki-vodopadi-berkovica",
+    kind: "detailed",
+    name: "Хайдушки водопади (Берковица)",
+    region: "Западна Стара планина",
+    status: "Идея",
+    difficulty: "Лесна",
+    distanceKm: null,
+    gainM: null,
+    lossM: null,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Пролет – Есен; подходящ и за семейни разходки",
+    forecastLink: "https://www.google.com/search?q=prognoza+Berkovitsa+Haidushki+vodopadi",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "Берковица → изоставен завод Ком / начало на екопътеката → Хайдушки водопади; алтернативно достъп с по-проходим автомобил почти до водопадите.",
+    verificationLevel: "ДОБРО — потвърдено е началото в западните покрайнини на Берковица, достъпът с автомобил и леката семейна трудност.",
+    transport: {
+      summary: "Най-удобно е с кола до края на Берковица; обществен транспорт и таксита не са потвърдени.",
+      car: {
+        available: true,
+        text: "До началото се стига от центъра на Берковица по кафевите указателни стрелки; може да се паркира при изоставения завод Ком.",
+        parkingNote: "GPS паркинг не е потвърден; при по-проходим автомобил може да се стигне почти до водопадите.",
+      },
+      public: {
+        steps: [],
+      },
+    },
+    huts: [
+      {
+        name: "хижа Ком",
+        elevation: 1620,
+        beds: 22,
+        officialPhone: "0889 681 693",
+        altPhone: "0889 681 693",
+        email: null,
+        gps: "43.188450, 23.081283",
+        verified: true,
+        conflict: "Контактът е потвърден в два източника за старата хижа Ком; втори независим номер за същия обект не беше намерен в наличните резултати.",
+      },
+    ],
+    taxis: [],
+    risk: {
+      level: "НИСЪК",
+      color: "emerald",
+      points: [
+        "Екопътеката е лека и подходяща за деца.",
+        "Има малък технически участък само в края при слизането до водопадите.",
+        "Маркировката е рядка, но ориентирането е сравнително лесно по пътя.",
+      ],
+      conclusion: "Лек и семеен маршрут с минимални технически трудности.",
+    },
+    days: [
+      {
+        date: null,
+        label: "Берковица → Хайдушки водопади",
+        type: "Преход",
+        distance: "неизвестно",
+        gain: "неизвестно",
+        time: "1-2 ч",
+        stay: null,
+        difficulty: "Лесна",
+      },
+    ],
+    accommodation: [
+      {
+        name: "Хижа Ком",
+        location: "Берковска планина",
+        rating: null,
+        price: null,
+        note: "Подходяща база за по-дълъг престой в района.",
+      },
+    ],
+    research: {
+      suitedFor: "Подходящ за семейна разходка и за кратък излет без голямо физическо натоварване.",
+      fridayNight: "Не е нужно нощуване в петък вечер.",
+      terrain: "Изронен асфалт и чакъл, с кратко слизане до самите водопади.",
+      kmNote: "В наличните източници не беше потвърдена точна дистанция и денивелация.",
+      assessment: "Лесен и достъпен маршрут, особено удобен при автомобилен достъп.",
+      practicalRank: 4,
+    },
+    sources: [
+      {
+        title: "Идея за активен уикенд: екопътека \"Хайдушки водопади\"",
+        url: "https://www.360mag.bg/posts/150237",
+      },
+      {
+        title: "Екопътека \"Хайдушките водопади\" | Маршрути | Trips Journal",
+        url: "https://tripsjournal.com/marshrut/ekopateka-haydushkite-vodopadi",
+      },
+      {
+        title: "Маршрути - Берковица >> Туризъм >>",
+        url: "https://www.berkovitsa.bg/hiking/marshruti.htm",
+      },
+    ],
+    windyEmbed: "https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricWind=km%2Fh&zoom=10&overlay=rain&product=ecmwf&level=surface&lat=43.188450&lon=23.081283",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  },
+  // Обогатен от Perplexity изследване (ориг. id: zavala-kitka-v1)
+  {
+    id: "zavala-kitka",
+    kind: "detailed",
+    name: "Завала – Китка",
+    region: "Завалска планина",
+    status: "Идея",
+    difficulty: "Лесна",
+    distanceKm: 4.5,
+    gainM: 203,
+    lossM: 203,
+    dateStart: "",
+    dateEnd: "",
+    from: "",
+    to: "",
+    season: "Пролет – Есен; възможно целогодишно при сухо време",
+    forecastLink: "https://www.google.com/search?q=prognoza+Zavala+Kitka",
+    busLink: "",
+    bdzLink: "",
+    avtogariLink: "",
+    routeLine: "с. Завала → черен път → ферма / овчарник → връх Китка; алтернативно двудневно комбиниране със с. Неделково.",
+    verificationLevel: "ДОБРО — потвърден кратък маршрут, с координати, дистанция и денивелация от допълнителен източник.",
+    transport: {
+      summary: "Най-лесно е с кола до центъра на с. Завала; обществен транспорт и таксита не са потвърдени.",
+      car: {
+        available: true,
+        text: "Автомобил може да се остави в центъра на селото или при новоизградения овчарник по черния път.",
+        parkingNote: "Точен GPS паркинг не е потвърден, но са налични начални координати за селото.",
+      },
+      public: {
+        steps: [],
+      },
+    },
+    huts: [],
+    taxis: [],
+    risk: {
+      level: "НИСЪК",
+      color: "emerald",
+      points: [
+        "Маршрутът е кратък и сравнително равномерен.",
+        "Последният участък към върха е стръмен, но къс.",
+        "Възможно е да се комбинира с друг маршрут в Завалска планина.",
+      ],
+      conclusion: "Лесен и бърз маршрут, подходящ и при ограничено време.",
+    },
+    days: [
+      {
+        date: null,
+        label: "с. Завала → връх Китка",
+        type: "Преход",
+        distance: "4.5 км",
+        gain: "203 м",
+        time: "1.5 ч",
+        stay: null,
+        difficulty: "Лесна",
+      },
+    ],
+    accommodation: [],
+    research: {
+      suitedFor: "Подходящ за начинаещи туристи и за кратък излет с бързо връщане.",
+      fridayNight: "Не е необходимо нощуване в петък.",
+      terrain: "Черни пътища, кратък горски участък, ферма и къс стръмен финал към върха.",
+      kmNote: "Дължината 4.5 км е посочена за двупосочния маршрут в източника; допълнителен източник дава 2.25 км в посока и 203 м денивелация.",
+      assessment: "Практичен и кратък маршрут с ясна логистика.",
+      practicalRank: 1,
+    },
+    sources: [
+      {
+        title: "село Завала – връх Китка | Маршрути | Trips Journal",
+        url: "https://tripsjournal.com/marshrut/s-zavala-vr-kitka",
+      },
+      {
+        title: "Завалска планина - връх Китка 1181м",
+        url: "https://www.mladplaninar.com/marshruti/zavalska-planina-vrah-kitka-1181m/",
+      },
+      {
+        title: "село Завала - връх Китка",
+        url: "https://bgmountains.org/bg/gps-tracks/cats/download/26-zavalska/766-",
+      },
+    ],
+    windyEmbed: "",
+    notesDefault: "",
+    meta: {
+      importedAt: "2026-07-16",
+      sourceTool: "Perplexity",
+    },
+  }
+];
+const ALMANAC_META = {
+  "Рила": { hub: "Логистичен център: Самоков / Дупница / Благоевград", season: "Юни – Октомври" },
+  "Пирин": { hub: "Логистичен център: Банско / Добринище / Сандански", season: "Юли – Септември" },
+  "Стара планина": { hub: "Логистичен център: Гара Лакатник / Бов / Клисура / Карлово", season: "Май – Юни, Септември – Октомври" },
+  "Родопи": { hub: "Логистичен център: Велинград / Пловдив / Асеновград / Смолян", season: "Целогодишно (ниските части)" },
+  "Осогово и Средна гора": { hub: "Логистичен център: Кюстендил / Копривщица / Клисура", season: "Май – Октомври" },
+};
+
+const ALMANAC = {
+  "Рила": [
+  ],
+  "Пирин": [
+  ],
+  "Стара планина": [
+    { id: "S06", name: "Витиня", region: "Стара планина", distanceKm: 10, gainM: 400, lossM: 400, difficulty: "Лесна", hutName: "х. Чавдар", hutPhone: "0897 783 199", day1: "Витиня → х. Чавдар", day2: "х. Мургана → Челопеч", back: "Гара Челопеч", verified: true },
+    { id: "S07", name: "Куклите", region: "Стара планина", distanceKm: 8, gainM: 850, lossM: 850, difficulty: "Висока", hutName: "х. Мургана", hutPhone: "0886 111 828", day1: "Челопеч → х. Мургана", day2: "проход Гълъбец → Д. Камарци", back: "Гара Д. Камарци", verified: true },
+    { id: "S08", name: "Тетевенски", region: "Стара планина", distanceKm: 16, gainM: 1100, lossM: 1100, difficulty: "Висока", hutName: "х. Бенковски", hutPhone: "0876 24 30 79", day1: "Антон → х. Бенковски", day2: "слизане към Копривщица", back: "Гара Копривщица", verified: true },
+    { id: "S09", name: "Козя стена", region: "Стара планина", distanceKm: 10, gainM: 900, lossM: 900, difficulty: "Висока", hutName: "х. Козя стена", hutPhone: "0882 440 757", day1: "Клисура → х. Козя стена", day2: "вр. Ушите → Розино", back: "Гара Розино", verified: true },
+    { id: "S10", name: "х. Ехо", region: "Стара планина", distanceKm: 12, gainM: 1050, lossM: 1050, difficulty: "Висока", hutName: "х. Ехо", hutPhone: "0888 986 861", day1: "Розино → х. Ехо", day2: "вр. Камарата → Клисура", back: "Гара Клисура", verified: true },
+  ],
+  "Родопи": [
+    { id: "D01", name: "Цепина", region: "Родопи", distanceKm: 6, gainM: 400, lossM: 400, difficulty: "Лесна", hutName: "х. Цепина", hutPhone: "0899 817 153", day1: "гара Цепина → х. Цепина", day2: "х. Цепина → гара Аврамово", back: "Теснолинейка", verified: true },
+    { id: "D02", name: "Велийца", region: "Родопи", distanceKm: 22, gainM: 500, lossM: 500, difficulty: "Средна", hutName: "засл. Велийца", hutPhone: "—", day1: "гара Аврамово → засл. Велийца", day2: "слизане към Сърница", back: "Рейс от Сърница", verified: true },
+    { id: "D03", name: "Баташка поляна", region: "Родопи", distanceKm: 15, gainM: 600, lossM: 600, difficulty: "Лесна", hutName: "х. Добра вода", hutPhone: "0878 241 158", day1: "Велинград → х. Добра вода", day2: "Ракитово или Батак", back: "Рейс от Пазарджик", verified: true },
+    { id: "D04", name: "Върховръх", region: "Родопи", distanceKm: 12, gainM: 700, lossM: 700, difficulty: "Средна", hutName: "х. Върховръх", hutPhone: "0886 897 545", day1: "с. Скобелево → х. Върховръх", day2: "слизане към Перущица", back: "Рейс от Пловдив", verified: true },
+    { id: "D05", name: "Академик", region: "Родопи", distanceKm: 10, gainM: 600, lossM: 600, difficulty: "Лесна", hutName: "х. Академик", hutPhone: "0899 887 632", day1: "с. Храбрино → х. Академик", day2: "с. Бойково → Храбрино", back: "Автобус №86 за Пловдив", verified: true },
+    { id: "D06", name: "Чернатица", region: "Родопи", distanceKm: 12, gainM: 750, lossM: 750, difficulty: "Средна", hutName: "х. Бряновщица", hutPhone: "0879 259 095", day1: "с. Храбрино → х. Бряновщица", day2: "слизане към Перущица", back: "Рейс от Пловдив", verified: true },
+    { id: "D07", name: "Добростан", region: "Родопи", distanceKm: 18, gainM: 900, lossM: 900, difficulty: "Средна/Висока", hutName: "х. Безово", hutPhone: "0896 688 438", day1: "Асеновград → х. Безово", day2: "слизане към с. Хвойна", back: "Рейс Смолян-София", verified: true },
+    { id: "D08", name: "р. Чая", region: "Родопи", distanceKm: 14, gainM: 850, lossM: 850, difficulty: "Средна", hutName: "х. Кръстова гора", hutPhone: "03132 2203", day1: "гара Бачково → х. Кръстова гора", day2: "Червената стена → Асеновград", back: "Влак от Асеновград", verified: true },
+    { id: "D09", name: "Девинска река", region: "Родопи", distanceKm: 12, gainM: 300, lossM: 300, difficulty: "Лесна", hutName: "засл. Лъката", hutPhone: "—", day1: "р. Девин → екопътека Струилица", day2: "заслон Лъката → с. Борино", back: "Рейс Доспат-София", verified: true },
+    { id: "D10", name: "Смолянски езера", region: "Родопи", distanceKm: 14, gainM: 500, lossM: 800, difficulty: "Лесна", hutName: "х. Смолянски езера", hutPhone: "0889 906 595", day1: "Смолян → х. Смолянски езера", day2: "превал → с. Широка лъка", back: "Рейс Смолян-София", verified: true },
+  ],
+  "Осогово и Средна гора": [
+    { id: "O01", name: "Кюстендил – х. Осогово", region: "Осогово и Средна гора", distanceKm: 18, gainM: 1100, lossM: 1100, difficulty: "Средна", hutName: "х. Осогово", hutPhone: "0882 815 515", day1: "Кюстендил → вр. Руен → Гюешево", day2: "Нощувка в х. Осогово", back: "Влак/автобус от Гюешево", verified: true },
+    { id: "O02", name: "вр. Руен (от Три буки)", region: "Осогово и Средна гора", distanceKm: 13, gainM: 707, lossM: 707, difficulty: "Средна", hutName: "засл. Руен", hutPhone: "—", day1: "Три буки → вр. Руен", day2: "Нощувка в засл. Руен", back: "Слизане през „Три буки“", verified: true },
+    { id: "O03", name: "Гюешево – вр. Руен", region: "Осогово и Средна гора", distanceKm: 15, gainM: 1000, lossM: 1000, difficulty: "Висока", hutName: "х. Осогово", hutPhone: "0882 815 515", day1: "Гюешево → вр. Руен", day2: "Нощувка в х. Осогово", back: "Обратен вариант, Гюешево", verified: true },
+    { id: "O04", name: "Слокощица – х. Осогово", region: "Осогово и Средна гора", distanceKm: 14, gainM: 900, lossM: 900, difficulty: "Средна", hutName: "х. Осогово", hutPhone: "0882 815 515", day1: "Слокощица → х. Осогово (долина на р. Бистрица)", day2: "–", back: "Връщане през Хисарлъка", verified: true },
+    { id: "O05", name: "заслон Елешница", region: "Осогово и Средна гора", distanceKm: 10, gainM: 500, lossM: 500, difficulty: "Лесна", hutName: "заслон Елешница", hutPhone: "ПСС 112/1470", day1: "Дива природа в южните склонове", day2: "–", back: "Връщане през долината на Струма", verified: true },
+    { id: "O06", name: "Копривщица – х. Бунтовна", region: "Осогово и Средна гора", distanceKm: 16, gainM: 700, lossM: 700, difficulty: "Средна", hutName: "х. Бунтовна", hutPhone: "0876 252 540", day1: "Копривщица → х. Бунтовна (билото)", day2: "–", back: "Връщане през Пловдив", verified: true },
+    { id: "O07", name: "Клисура – х. Бунтовна", region: "Осогово и Средна гора", distanceKm: 12, gainM: 850, lossM: 850, difficulty: "Средна/Висока", hutName: "х. Бунтовна", hutPhone: "0876 252 540", day1: "Клисура → х. Бунтовна (панорамно изкачване)", day2: "–", back: "Подбалкански влак", verified: true },
+    { id: "O08", name: "Клисура – х. Братия", region: "Осогово и Средна гора", distanceKm: 14, gainM: 900, lossM: 900, difficulty: "Висока", hutName: "х. Братия", hutPhone: "0888 621 297", day1: "Клисура → х. Братия (вр. Братия 1519м)", day2: "–", back: "Рейс", verified: true },
+    { id: "O09", name: "Карлово – х. Чивира", region: "Осогово и Средна гора", distanceKm: 18, gainM: 1000, lossM: 1000, difficulty: "Висока", hutName: "засл. Барикадите", hutPhone: "ПСС 112/1470", day1: "Карлово → х. Чивира (местност Барикадите)", day2: "–", back: "Влак", verified: true },
+    { id: "O10", name: "Хисаря – х. Фенера", region: "Осогово и Средна гора", distanceKm: 15, gainM: 1100, lossM: 1100, difficulty: "Висока", hutName: "х. Фенера", hutPhone: "0888 640 813", day1: "Хисаря → х. Фенера (с. Свежен)", day2: "–", back: "Връщане през Карлово", verified: true },
+  ],
+};
+
+/* =========================================================================
+   Helper functions
+   ========================================================================= */
+const REGION_ORDER = ["Рила", "Пирин", "Стара планина", "Родопи", "Осогово и Средна гора"];
+
+function almanacToCommon(route) {
+  return {
+    id: route.id,
+    kind: "almanac",
+    name: route.name,
+    region: route.region,
+    difficulty: route.difficulty,
+    distanceKm: route.distanceKm,
+    gainM: route.gainM,
+    lossM: route.lossM,
+    hutName: route.hutName,
+    hutPhone: route.hutPhone,
+    day1: route.day1,
+    day2: route.day2,
+    back: route.back,
+    verified: route.verified,
+    suitedFor: route.suitedFor,
+    fridayNight: route.fridayNight,
+    terrain: route.terrain,
+    kmNote: route.kmNote,
+    assessment: route.assessment,
+    practicalRank: route.practicalRank,
+  };
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/* =========================================================================
+   Import / storage schema (v1) — external JSON → app data
+   ========================================================================= */
+const SCHEMA_VERSION = 1;
+const STORAGE_KEY_OVERRIDES = "route-overrides-v1";
+const STORAGE_KEY_IMPORTED = "imported-routes-v1";
+const STORAGE_KEY_USERDATA = "user-data-v1"; // favorites, completed, notes, gearState, customRoutes
+
+/** Decide which view/kind an externally-imported object should render as. */
+function inferKind(obj) {
+  if (obj.transport || (Array.isArray(obj.huts) && obj.huts.length > 0) || Array.isArray(obj.risk?.points)) return "detailed";
+  if (obj.day1 || obj.hutName || obj.hutPhone) return "almanac";
+  return "custom";
+}
+
+/** Flatten the research.* sub-object (if present) onto the top level, for easy display. */
+function flattenResearch(obj) {
+  if (!obj.research) return obj;
+  const { research, ...rest } = obj;
+  return { ...rest, ...research };
+}
+
+/** Shallow-merge an override object onto a seed object; only provided keys are overwritten. Nested objects are replaced wholesale, not deep-merged, since imported JSON is expected to be self-contained per field. */
+function mergeRouteData(seed, override) {
+  if (!override) return seed;
+  const merged = { ...seed };
+  Object.keys(override).forEach((key) => {
+    if (override[key] !== undefined) merged[key] = override[key];
+  });
+  return merged;
+}
+
+/** Normalize a raw imported JSON object (per the schema) into the shape our view components expect. */
+function normalizeImportedRoute(raw) {
+  const flat = flattenResearch(raw);
+  const kind = inferKind(flat);
+  const base = {
+    id: flat.id,
+    kind,
+    name: flat.name,
+    region: flat.region || "Без регион",
+    difficulty: flat.difficulty || "Средна",
+    distanceKm: flat.distanceKm ?? null,
+    gainM: flat.gainM ?? null,
+    lossM: flat.lossM ?? null,
+  };
+  if (kind === "detailed") {
+    return {
+      ...base,
+      status: flat.status || "Внесен",
+      dateStart: flat.dates?.start || "",
+      dateEnd: flat.dates?.end || "",
+      from: flat.from || "",
+      to: flat.to || "",
+      season: flat.season || "–",
+      forecastLink: flat.links?.forecast || "",
+      busLink: flat.links?.bus || "",
+      bdzLink: flat.links?.bdz || "",
+      avtogariLink: flat.links?.avtogari || "",
+      routeLine: flat.routeLine || flat.name,
+      verificationLevel: flat.verificationLevel || "Внесени данни — нивото на верификация не е посочено.",
+      transport: flat.transport || { summary: "Няма въведени данни за транспорт." },
+      huts: flat.huts || [],
+      risk: flat.risk || null,
+      days: flat.days || [],
+      accommodation: flat.accommodation || [],
+      taxis: flat.transport?.taxis || [],
+      windyEmbed: flat.links?.windyEmbed || "",
+      notesDefault: flat.notesDefault || "",
+      suitedFor: flat.suitedFor, fridayNight: flat.fridayNight, terrain: flat.terrain, kmNote: flat.kmNote, assessment: flat.assessment, practicalRank: flat.practicalRank,
+      sources: flat.sources || [],
+    };
+  }
+  if (kind === "almanac") {
+    return {
+      ...base,
+      hutName: flat.huts?.[0]?.name || flat.hutName || "–",
+      hutPhone: flat.huts?.[0]?.officialPhone || flat.hutPhone || "–",
+      day1: flat.days?.[0]?.label || flat.day1 || "–",
+      day2: flat.days?.[1]?.label || flat.day2 || "–",
+      back: flat.back || "–",
+      verified: flat.huts?.[0]?.verified ?? flat.verified ?? false,
+      suitedFor: flat.suitedFor, fridayNight: flat.fridayNight, terrain: flat.terrain, kmNote: flat.kmNote, assessment: flat.assessment, practicalRank: flat.practicalRank,
+    };
+  }
+  return {
+    ...base,
+    transportNote: flat.transport?.summary || flat.transportNote || "",
+    huts: (flat.huts || []).map((h) => ({ name: h.name, phone: h.officialPhone || h.phone })),
+    days: (flat.days || []).map((d) => ({ text: d.label || d.text })),
+    risks: flat.risk?.points?.join(" ") || flat.risks || "",
+  };
+}
+
+function fmtKm(n) {
+  if (n === null || n === undefined) return "–";
+  return `${n} км`;
+}
+function fmtM(n: number | null | undefined) {
+  if (n === null || n === undefined) return "–";
+  return `${n > 0 ? "+" : ""}${n} м`;
+}
+/** Format descent (always negative prefix). */
+function fmtLoss(lossM: number | null | undefined) {
+  if (lossM === null || lossM === undefined) return "–";
+  return `-${lossM} м`;
+}
+
+function buildMarkdownForDetailed(route) {
+  const lines = [];
+  lines.push(`# ${route.name}`);
+  lines.push("");
+  lines.push(`- **Регион:** ${route.region}`);
+  lines.push(`- **Статус:** ${route.status}`);
+  lines.push(`- **Дистанция:** ${route.distanceKm} км | **Изкачване:** +${route.gainM} м | **Слизане:** -${route.lossM} м`);
+  lines.push(`- **Трудност:** ${route.difficulty}`);
+  lines.push(`- **Дати:** ${route.dateStart} → ${route.dateEnd}`);
+  lines.push(`- **Маршрут:** ${route.routeLine}`);
+  lines.push(`- **Прогноза:** ${route.forecastLink}`);
+  lines.push("");
+  lines.push(`## Транспорт`);
+  lines.push(route.transport?.summary || "–");
+  if (route.transport?.car?.available) {
+    lines.push("");
+    lines.push(`**С кола:** ${route.transport.car.text}`);
+    if (route.transport.car.parkingNote) lines.push(`⚠️ ${route.transport.car.parkingNote}`);
+  }
+  if (route.transport?.public?.steps?.length) {
+    lines.push("");
+    lines.push(`**Обществен транспорт:**`);
+    route.transport.public.steps.forEach((s) => lines.push(`- ${s.from} → ${s.to}: ${s.mode} (${s.time}) — ${s.note}`));
+  }
+  if (route.taxis?.length) {
+    lines.push("");
+    lines.push(`**Таксита:**`);
+    route.taxis.forEach((t) => lines.push(`- ${t.name}: ${t.phone} — ${t.note}`));
+  }
+  lines.push("");
+  lines.push(`## Хижи`);
+  (route.huts || []).forEach((h) => {
+    lines.push(`- **${h.name}** (${h.elevation}м, ${h.beds} места) — тел: ${h.officialPhone}${h.altPhone ? ` / алт: ${h.altPhone}` : ""} — ${h.verified ? "✅ Потвърден" : "⚠️ Нужна верификация"}`);
+    if (h.conflict) lines.push(`  ${h.conflict}`);
+  });
+  lines.push("");
+  if (route.risk) {
+    lines.push(`## Риск: ${route.risk.level}`);
+    (route.risk.points || []).forEach((p) => lines.push(`- ${p}`));
+    if (route.risk.conclusion) lines.push(`\n**Извод:** ${route.risk.conclusion}`);
+  } else {
+    lines.push(`## Риск`);
+    lines.push(`Няма въведени данни.`);
+  }
+  lines.push("");
+  lines.push(`## Дни по дни`);
+  lines.push(`| Дата | Маршрут | Тип | Разстояние | Денивелация | Време | Нощувка | Трудност |`);
+  lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- |`);
+  (route.days || []).forEach((d) => lines.push(`| ${d.date} | ${d.label} | ${d.type} | ${d.distance} | ${d.gain} | ${d.time} | ${d.stay} | ${d.difficulty} |`));
+  if (route.accommodation?.length) {
+    lines.push("");
+    lines.push(`## Настаняване`);
+    route.accommodation.forEach((a) => lines.push(`- **${a.name}** (${a.location}) — ${a.rating}, ${a.price}. ${a.note}`));
+  }
+  return lines.join("\n");
+}
+
+function buildMarkdownForAlmanac(route) {
+  const lines = [];
+  lines.push(`# ${route.name}`);
+  lines.push("");
+  lines.push(`- **Регион:** ${route.region}`);
+  lines.push(`- **Дистанция:** ${route.distanceKm} км | **Изкачване:** +${route.gainM} м${route.lossM ? ` | **Слизане:** -${route.lossM} м` : ""}`);
+  lines.push(`- **Трудност:** ${route.difficulty}`);
+  lines.push(`- **Хижа:** ${route.hutName} — тел: ${route.hutPhone}`);
+  lines.push("");
+  lines.push(`## Дни по дни`);
+  lines.push(`- **Ден 1:** ${route.day1}`);
+  lines.push(`- **Ден 2:** ${route.day2}`);
+  lines.push(`- **Прибиране:** ${route.back}`);
+  return lines.join("\n");
+}
+
+function buildMarkdownForCustom(route) {
+  const lines = [];
+  lines.push(`# ${route.name}`);
+  lines.push("");
+  lines.push(`- **Регион:** ${route.region || "–"}`);
+  lines.push(`- **Дистанция:** ${route.distanceKm || "–"} км | **Изкачване:** +${route.gainM || "–"} м`);
+  lines.push(`- **Трудност:** ${route.difficulty || "–"}`);
+  lines.push(`- **Транспорт:** ${route.transportNote || "–"}`);
+  lines.push("");
+  lines.push(`## Хижи`);
+  (route.huts || []).forEach((h) => lines.push(`- ${h.name}: ${h.phone || "–"}`));
+  lines.push("");
+  lines.push(`## Дни`);
+  (route.days || []).forEach((d, i) => lines.push(`- **Ден ${i + 1}:** ${d.text || "–"}`));
+  if (route.risks) {
+    lines.push("");
+    lines.push(`## Рискове`);
+    lines.push(route.risks);
+  }
+  return lines.join("\n");
+}
+
+/* =========================================================================
+   Small shared UI atoms
+   ========================================================================= */
+function DifficultyBadge({ difficulty }) {
+  const s = diffStyle(difficulty);
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${s.bg} ${s.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+      {difficulty}
+    </span>
+  );
+}
+
+function StatCard({ icon: Icon, label, value, accent }: any) {
+  return (
+    <div className="bg-white rounded-xl border border-stone-200 p-4 flex items-center gap-3 shadow-sm">
+      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${accent || "bg-emerald-50 text-emerald-700"}`}>
+        <Icon size={20} />
+      </div>
+      <div className="min-w-0">
+        <div className="text-[11px] uppercase tracking-wide text-stone-400 font-bold">{label}</div>
+        <div className="text-lg font-bold text-stone-800 truncate">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle({ icon: Icon, children }) {
+  return (
+    <h3 className="flex items-center gap-2 text-sm font-bold text-stone-700 uppercase tracking-wide mb-3">
+      {Icon && <Icon size={16} className="text-emerald-600" />}
+      {children}
+    </h3>
+  );
+}
+
+/* =========================================================================
+   Sidebar
+   ========================================================================= */
+function Sidebar({
+  detailedRoutes, almanac, customRoutes, importedRoutes, selectedId, onSelect,
+  search, setSearch, favorites, toggleFavorite, completed,
+  difficultyFilter, setDifficultyFilter, sortMode, setSortMode,
+  collapsedRegions, toggleRegion, onOpenAddForm, onOpenEmergency, onOpenProfile, onOpenImport,
+  mobileOpen, setMobileOpen,
+}) {
+  const q = search.trim().toLowerCase();
+
+  const matchesQuery = useCallback((name, region) => {
+    if (!q) return true;
+    return name.toLowerCase().includes(q) || (region || "").toLowerCase().includes(q);
+  }, [q]);
+
+  const matchesDifficulty = useCallback((difficulty) => {
+    if (difficultyFilter === "all") return true;
+    return difficulty === difficultyFilter;
+  }, [difficultyFilter]);
+
+  const sortRoutes = useCallback((list) => {
+    const arr = [...list];
+    if (sortMode === "km") arr.sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0));
+    else if (sortMode === "km-desc") arr.sort((a, b) => (b.distanceKm || 0) - (a.distanceKm || 0));
+    else if (sortMode === "difficulty") {
+      const order = ["Лесна", "Лесен", "Лесна/Средна", "Средна", "Среден", "Средна/Висока", "Висока", "Екстремна"];
+      arr.sort((a, b) => order.indexOf(a.difficulty) - order.indexOf(b.difficulty));
+    }
+    return arr;
+  }, [sortMode]);
+
+  const filteredDetailed = detailedRoutes.filter((r) => matchesQuery(r.name, r.region) && matchesDifficulty(r.difficulty));
+  const filteredCustom = customRoutes.filter((r) => matchesQuery(r.name, r.region) && matchesDifficulty(r.difficulty));
+  const filteredImported = (importedRoutes || []).filter((r) => matchesQuery(r.name, r.region) && matchesDifficulty(r.difficulty));
+
+  const favoriteIds = new Set(favorites);
+  const completedIds = new Set(Object.keys(completed));
+
+  return (
+    <>
+      {mobileOpen && (
+        <div className="fixed inset-0 bg-black/50 z-30 lg:hidden" onClick={() => setMobileOpen(false)} />
+      )}
+      <aside className={`fixed lg:static inset-y-0 left-0 z-40 w-[300px] shrink-0 bg-[#0d2818] text-emerald-50 flex flex-col transform transition-transform duration-200 ${mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+        <div className="p-4 border-b border-emerald-900/60 flex items-center gap-2">
+          <div className="w-9 h-9 rounded-lg bg-emerald-600/20 flex items-center justify-center text-emerald-300">
+            <Mountain size={20} />
+          </div>
+          <div>
+            <div className="font-extrabold text-lg leading-tight tracking-tight">ПЛАНИНА</div>
+            <div className="text-[11px] text-emerald-300/70 leading-none">Планировчик на преходи</div>
+          </div>
+          <button onClick={() => setMobileOpen(false)} className="ml-auto lg:hidden text-emerald-300 hover:text-white">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-3 space-y-2 border-b border-emerald-900/60">
+          <div className="relative">
+            <Search size={15} className="absolute left-2.5 top-2.5 text-emerald-400/60" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Търси маршрут или регион..."
+              className="w-full bg-emerald-950/50 border border-emerald-800/60 rounded-lg pl-8 pr-2 py-2 text-sm placeholder-emerald-400/40 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+            {["all", "Лесна", "Средна", "Висока", "Екстремна"].map((d) => (
+              <button
+                key={d}
+                onClick={() => setDifficultyFilter(d)}
+                className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+                  difficultyFilter === d
+                    ? "bg-emerald-600 border-emerald-500 text-white"
+                    : "bg-transparent border-emerald-800/70 text-emerald-300/80 hover:border-emerald-600"
+                }`}
+              >
+                {d === "all" ? "Всички" : d}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px] text-emerald-400/70">
+            <ArrowUpDown size={12} />
+            <select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value)}
+              className="bg-emerald-950/50 border border-emerald-800/60 rounded px-1.5 py-1 text-emerald-200 focus:outline-none"
+            >
+              <option value="default">По подразбиране</option>
+              <option value="km">Км (възх.)</option>
+              <option value="km-desc">Км (низх.)</option>
+              <option value="difficulty">Трудност</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto py-2">
+          {filteredDetailed.length > 0 && (
+            <div className="px-3 mb-3">
+              <div className="text-[11px] font-bold uppercase text-emerald-400/60 mb-1.5 px-1">📌 Планирани</div>
+              <div className="space-y-1">
+                {sortRoutes(filteredDetailed).map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => { onSelect(r.id); setMobileOpen(false); }}
+                    className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors flex items-start gap-2 ${
+                      selectedId === r.id ? "bg-emerald-700/50 ring-1 ring-emerald-500" : "hover:bg-emerald-900/40"
+                    }`}
+                  >
+                    <span className="mt-0.5 text-amber-400"><Star size={13} fill="currentColor" /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold truncate">{r.name}</span>
+                      <span className="block text-[11px] text-emerald-300/60">{r.distanceKm} км · {r.difficulty}</span>
+                    </span>
+                    {completedIds.has(r.id) && <CircleCheckBig size={14} className="text-emerald-400 mt-0.5" />}
+                    {favoriteIds.has(r.id) && <Heart size={12} className="text-rose-400 mt-1" fill="currentColor" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {filteredCustom.length > 0 && (
+            <div className="px-3 mb-3">
+              <div className="text-[11px] font-bold uppercase text-emerald-400/60 mb-1.5 px-1">✍️ Добавени от теб</div>
+              <div className="space-y-1">
+                {sortRoutes(filteredCustom).map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => { onSelect(r.id); setMobileOpen(false); }}
+                    className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors ${
+                      selectedId === r.id ? "bg-emerald-700/50 ring-1 ring-emerald-500" : "hover:bg-emerald-900/40"
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold truncate">{r.name}</span>
+                    <span className="block text-[11px] text-emerald-300/60">{r.region || "Без регион"}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {filteredImported.length > 0 && (
+            <div className="px-3 mb-3">
+              <div className="text-[11px] font-bold uppercase text-emerald-400/60 mb-1.5 px-1">📥 Внесени (JSON)</div>
+              <div className="space-y-1">
+                {sortRoutes(filteredImported).map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => { onSelect(r.id); setMobileOpen(false); }}
+                    className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors ${
+                      selectedId === r.id ? "bg-emerald-700/50 ring-1 ring-emerald-500" : "hover:bg-emerald-900/40"
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 block">
+                      <span className="block text-sm font-semibold truncate">{r.name}</span>
+                      <span className="block text-[11px] text-emerald-300/60">{r.region || "Без регион"}{r.distanceKm ? ` · ${r.distanceKm} км` : ""}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {REGION_ORDER.map((region) => {
+            const routes = (almanac[region] || []).filter((r) => matchesQuery(r.name, region) && matchesDifficulty(r.difficulty));
+            if (routes.length === 0) return null;
+            const isCollapsed = collapsedRegions[region];
+            return (
+              <div key={region} className="px-3 mb-1">
+                <button
+                  onClick={() => toggleRegion(region)}
+                  className="w-full flex items-center gap-1.5 px-1 py-1.5 text-[11px] font-bold uppercase text-emerald-400/70 hover:text-emerald-200"
+                >
+                  {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                  {region}
+                  <span className="ml-auto font-normal normal-case text-emerald-500/50">{routes.length}</span>
+                </button>
+                {!isCollapsed && (
+                  <div className="space-y-0.5 mt-0.5">
+                    {sortRoutes(routes).map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => { onSelect(r.id); setMobileOpen(false); }}
+                        className={`w-full text-left px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-2 ${
+                          selectedId === r.id ? "bg-emerald-700/50 ring-1 ring-emerald-500" : "hover:bg-emerald-900/40"
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13px] font-medium truncate">{r.name}</span>
+                          <span className="block text-[10.5px] text-emerald-300/50">{r.distanceKm} км · {r.difficulty}</span>
+                        </span>
+                        {completedIds.has(r.id) && <CircleCheckBig size={13} className="text-emerald-400 shrink-0" />}
+                        {favoriteIds.has(r.id) && <Heart size={11} className="text-rose-400 shrink-0" fill="currentColor" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-3 border-t border-emerald-900/60 space-y-1.5">
+          <button onClick={onOpenProfile} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-900/40 hover:bg-emerald-900/70 text-sm font-semibold transition-colors">
+            <User size={15} /> Личен профил
+          </button>
+          <button onClick={onOpenEmergency} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-900/40 hover:bg-rose-900/70 text-sm font-semibold transition-colors text-rose-100">
+            <Siren size={15} /> Спешни контакти
+          </button>
+          <button onClick={onOpenImport} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-sky-900/40 hover:bg-sky-900/70 text-sm font-semibold transition-colors text-sky-100">
+            <Copy size={15} /> Импортирай данни
+          </button>
+          <button onClick={onOpenAddForm} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-bold transition-colors">
+            <Plus size={15} /> Добави нов маршрут
+          </button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+/* =========================================================================
+   RouteView — detailed route (DETAILED_ROUTES entries)
+   ========================================================================= */
+function DetailedRouteView({
+  route, transportMode, setTransportMode, hutVerification, verifyHut,
+  isFavorite, toggleFavorite, isCompleted, completedInfo, onOpenComplete,
+  gearState, toggleGear, resetGear, notes, setNote, onExportMarkdown, copied,
+}) {
+  const [tab, setTab] = useState("overview");
+  const tabs = [
+    { id: "overview", label: "Общ преглед", icon: Gauge },
+    { id: "transport", label: "Транспорт", icon: Car },
+    { id: "huts", label: "Хижи & Риск", icon: Shield },
+    { id: "days", label: "Дни", icon: Calendar },
+    { id: "gear", label: "Екипировка", icon: Backpack },
+    { id: "notes", label: "Бележки", icon: StickyNote },
+  ];
+  const gear = gearListFor(route.difficulty);
+  const gearDone = gear.filter((g) => gearState[g]).length;
+  const gearPct = gear.length > 0 ? Math.round((gearDone / gear.length) * 100) : 0;
+  const riskColorMap = {
+    emerald: "bg-emerald-50 border-emerald-300 text-emerald-900",
+    amber: "bg-amber-50 border-amber-300 text-amber-900",
+    rose: "bg-rose-50 border-rose-300 text-rose-900",
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      {/* Hero header */}
+      <div className="rounded-2xl overflow-hidden shadow-md mb-5">
+        <div className="bg-gradient-to-br from-[#1a4a2a] via-[#215c34] to-[#2e7d52] p-6 text-white relative">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-emerald-100/80 font-bold mb-1">
+                <MapPin size={12} /> {route.region}
+                <span className="opacity-50">•</span>
+                {route.dateStart} → {route.dateEnd}
+              </div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{route.name}</h1>
+              <p className="text-sm text-emerald-50/80 mt-1">{route.routeLine}</p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => toggleFavorite(route.id)}
+                aria-label={isFavorite ? "Премахни от любими" : "Добави в любими"}
+                className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors"
+                title="Любим"
+              >
+                <Heart size={16} className={isFavorite ? "text-rose-300" : "text-white/80"} fill={isFavorite ? "currentColor" : "none"} />
+              </button>
+              <span className="px-2.5 py-1 rounded-full bg-white/15 text-xs font-bold">{route.status}</span>
+            </div>
+          </div>
+          {isCompleted && (
+            <div className="mt-3 inline-flex items-center gap-1.5 bg-white/15 rounded-full px-3 py-1 text-xs font-semibold">
+              <CircleCheckBig size={13} /> Изминат на {completedInfo?.date} {completedInfo?.note ? `— ${completedInfo.note}` : ""}
+            </div>
+          )}
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-stone-200">
+          <StatCard icon={Ruler} label="Дистанция" value={fmtKm(route.distanceKm)} />
+          <StatCard icon={TrendingUp} label="Изкачване" value={fmtM(route.gainM)} accent="bg-amber-50 text-amber-700" />
+          <StatCard icon={TrendingDown} label="Слизане" value={fmtLoss(route.lossM)} accent="bg-sky-50 text-sky-700" />
+          <a href={route.forecastLink} target="_blank" rel="noreferrer" className="bg-white p-4 flex items-center gap-3 hover:bg-stone-50 transition-colors">
+            <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center"><Cloud size={20} /></div>
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wide text-stone-400 font-bold">Прогноза</div>
+              <div className="text-sm font-bold text-indigo-700 flex items-center gap-1">Windy <ExternalLink size={12} /></div>
+            </div>
+          </a>
+        </div>
+        <div className="bg-white px-4 py-2 flex items-center gap-2">
+          <DifficultyBadge difficulty={route.difficulty} />
+          <span className="text-xs text-stone-400">·</span>
+          <span className="text-xs text-stone-500">Сезон: {route.season}</span>
+          <button
+            onClick={() => onOpenComplete(route.id)}
+            className="ml-auto text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1"
+          >
+            <CircleCheckBig size={13} /> {isCompleted ? "Редактирай завършване" : "Маркирай като изминат"}
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 overflow-x-auto pb-1 mb-4 border-b border-stone-200">
+        {tabs.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`shrink-0 flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${
+                tab === t.id ? "border-emerald-600 text-emerald-700 bg-emerald-50/60" : "border-transparent text-stone-500 hover:text-stone-700"
+              }`}
+            >
+              <Icon size={14} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab content */}
+      {tab === "overview" && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={MapPin}>Маршрутна линия</SectionTitle>
+            <p className="text-sm text-stone-700 leading-relaxed">{route.routeLine}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4 text-xs">
+              {route.busLink && <a href={route.busLink} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-emerald-700 hover:underline"><Bus size={13} /> Автобус разписание</a>}
+              {route.bdzLink && <a href={route.bdzLink} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-emerald-700 hover:underline"><TrainFront size={13} /> БДЖ разписание</a>}
+              {route.avtogariLink && <a href={route.avtogariLink} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-emerald-700 hover:underline"><ExternalLink size={13} /> Автогари.инфо</a>}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={Shield}>Ниво на верификация</SectionTitle>
+            <p className="text-sm text-stone-600 leading-relaxed">{route.verificationLevel}</p>
+          </div>
+          {route.notesDefault && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900 flex gap-2">
+              <TriangleAlert size={16} className="shrink-0 mt-0.5" /> {route.notesDefault}
+            </div>
+          )}
+          {route.windyEmbed && (
+            <div className="bg-white rounded-xl border border-stone-200 p-5">
+              <SectionTitle icon={Cloud}>Прогноза на времето (Windy)</SectionTitle>
+              <iframe
+                src={route.windyEmbed}
+                title="Windy прогноза"
+                className="w-full h-[400px] rounded-lg border-0"
+                loading="lazy"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "transport" && (
+        <div className="space-y-4">
+          <div className="flex bg-stone-100 rounded-xl p-1 max-w-sm">
+            <button
+              onClick={() => setTransportMode(route.id, "car")}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-bold transition-colors ${
+                transportMode === "car" ? "bg-white shadow text-emerald-700" : "text-stone-500"
+              }`}
+            >
+              <Car size={15} /> С личен автомобил
+            </button>
+            <button
+              onClick={() => setTransportMode(route.id, "public")}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-bold transition-colors ${
+                transportMode === "public" ? "bg-white shadow text-emerald-700" : "text-stone-500"
+              }`}
+            >
+              <Bus size={15} /> Без кола / ОГТ
+            </button>
+          </div>
+
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <p className="text-sm text-stone-700 leading-relaxed mb-3">{route.transport.summary}</p>
+            {transportMode === "car" && route.transport.car?.available && (
+              <div className="space-y-3">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-900">
+                  <div className="font-bold flex items-center gap-1.5 mb-1"><Car size={14} /> Шофиране</div>
+                  {route.transport.car.text}
+                </div>
+                {route.transport.car.parkingNote && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-900 flex gap-2">
+                    <TriangleAlert size={14} className="shrink-0 mt-0.5" /> {route.transport.car.parkingNote}
+                  </div>
+                )}
+              </div>
+            )}
+            {transportMode === "public" && (
+              <div className="space-y-2">
+                {route.transport.public?.steps?.map((s, i) => (
+                  <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-stone-50 border border-stone-100">
+                    <div className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs font-bold shrink-0">{i + 1}</div>
+                    <div className="min-w-0 text-sm">
+                      <div className="font-semibold text-stone-800">{s.from} → {s.to}</div>
+                      <div className="text-stone-500">{s.mode} · {s.time}</div>
+                      <div className="text-stone-400 text-xs mt-0.5">{s.note}</div>
+                    </div>
+                  </div>
+                ))}
+                {(!route.transport.public?.steps || route.transport.public.steps.length === 0) && (
+                  <p className="text-sm text-stone-400 italic">Няма данни за обществен транспорт за този преход.</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {route.taxis?.length > 0 && (
+            <div className="bg-white rounded-xl border border-stone-200 p-5">
+              <SectionTitle icon={Phone}>Таксиметрови фирми</SectionTitle>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-stone-400 text-xs uppercase">
+                      <th className="pb-2 pr-3">Фирма</th><th className="pb-2 pr-3">Телефон</th><th className="pb-2">Забележка</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {route.taxis.map((t, i) => (
+                      <tr key={i} className="border-t border-stone-100">
+                        <td className="py-2 pr-3 font-semibold text-stone-700">{t.name}</td>
+                        <td className="py-2 pr-3">{t.phone ? <a href={`tel:${t.phone.replace(/\s/g, "")}`} className="text-emerald-700 hover:underline">{t.phone}</a> : <span className="text-stone-400">—</span>}</td>
+                        <td className="py-2 text-stone-500">{t.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {route.accommodation?.length > 0 && (
+            <div className="bg-white rounded-xl border border-stone-200 p-5">
+              <SectionTitle icon={Hotel}>Настаняване</SectionTitle>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {route.accommodation.map((a, i) => (
+                  <div key={i} className="border border-stone-100 rounded-lg p-3 bg-stone-50">
+                    <div className="font-bold text-stone-800 text-sm">{a.name}</div>
+                    <div className="text-xs text-stone-500 mb-1">{a.location}</div>
+                    <div className="text-xs text-stone-600">⭐ {a.rating} · {a.price}</div>
+                    <div className="text-xs text-stone-400 mt-1">{a.note}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "huts" && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={Home}>Одит на хижите</SectionTitle>
+            <div className="space-y-3">
+              {route.huts.map((h) => {
+                const verified = hutVerification[`${route.id}:${h.name}`] ?? h.verified;
+                return (
+                  <div key={h.name} className={`border rounded-lg p-4 ${h.conflict ? "border-amber-300 bg-amber-50/50" : "border-stone-200"}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-bold text-stone-800 flex items-center gap-1.5">
+                          {h.name}
+                          {h.conflict && <TriangleAlert size={14} className="text-amber-600" />}
+                        </div>
+                        <div className="text-xs text-stone-500">{h.elevation} м н.в. · {h.beds} места</div>
+                        {h.contactName && <div className="text-xs text-stone-500 mt-0.5">{h.contactName}</div>}
+                      </div>
+                      <span className={`px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${verified ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>
+                        {verified ? <CircleCheckBig size={12} /> : <Circle size={12} />} {verified ? "Потвърден" : "Непотвърден"}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-3 mt-2 text-sm">
+                      {h.officialPhone && <a href={`tel:${h.officialPhone.replace(/[^\d+]/g, "")}`} className="flex items-center gap-1 text-emerald-700 hover:underline">
+                        <Phone size={13} /> {h.officialPhone}
+                      </a>}
+                      {h.altPhone && <span className="flex items-center gap-1 text-stone-500"><Phone size={13} /> алт: {h.altPhone}</span>}
+                      {h.email && <span className="text-stone-500">✉️ {h.email}</span>}
+                      <span className="text-stone-400 text-xs">GPS: {h.gps}</span>
+                    </div>
+                    {h.conflict && <div className="mt-2 text-xs text-amber-800 bg-amber-100/70 rounded p-2">{h.conflict}</div>}
+                    {h.staleNumbers && <div className="mt-1 text-xs text-stone-400">{h.staleNumbers}</div>}
+                    {!verified && (
+                      <button
+                        onClick={() => verifyHut(route.id, h.name)}
+                        className="mt-3 text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500"
+                      >
+                        ✅ Верифицирай по телефон
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {route.huts.length === 0 && <p className="text-sm text-stone-400 italic">Няма въведени хижи за този маршрут.</p>}
+            </div>
+          </div>
+
+          {route.risk ? (
+            <div className={`rounded-xl border-2 p-5 ${riskColorMap[route.risk.color] || riskColorMap.amber}`}>
+              <div className="flex items-center gap-2 font-extrabold text-base mb-3">
+                <TriangleAlert size={18} /> Регистър на риска: {route.risk.level}
+              </div>
+              <ul className="space-y-2 text-sm">
+                {(route.risk.points || []).map((p, i) => (
+                  <li key={i} className="flex gap-2"><span className="mt-1.5 w-1 h-1 rounded-full bg-current shrink-0" />{p}</li>
+                ))}
+              </ul>
+              {route.risk.conclusion && (
+                <div className="mt-3 pt-3 border-t border-current/20 text-sm font-semibold">Извод: {route.risk.conclusion}</div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border-2 border-stone-200 bg-stone-50 p-5 text-sm text-stone-400 italic">
+              Няма въведени данни за риска на този маршрут.
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "days" && (
+        <div className="bg-white rounded-xl border border-stone-200 p-5 overflow-x-auto">
+          <SectionTitle icon={Calendar}>Дни по дни</SectionTitle>
+          <table className="w-full text-sm min-w-[640px]">
+            <thead>
+              <tr className="text-left text-stone-400 text-xs uppercase border-b border-stone-200">
+                <th className="pb-2 pr-3">Дата</th><th className="pb-2 pr-3">Маршрут</th><th className="pb-2 pr-3">Тип</th>
+                <th className="pb-2 pr-3">Разстояние</th><th className="pb-2 pr-3">Денивелация</th><th className="pb-2 pr-3">Време</th>
+                <th className="pb-2 pr-3">Нощувка</th><th className="pb-2">Трудност</th>
+              </tr>
+            </thead>
+            <tbody>
+              {route.days.map((d, i) => (
+                <tr key={i} className="border-b border-stone-100 last:border-0">
+                  <td className="py-2.5 pr-3 font-semibold text-stone-700 whitespace-nowrap">{d.date}</td>
+                  <td className="py-2.5 pr-3 text-stone-700">{d.label}</td>
+                  <td className="py-2.5 pr-3 text-stone-500">{d.type}</td>
+                  <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{d.distance}</td>
+                  <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{d.gain}</td>
+                  <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap flex items-center gap-1"><Clock size={11} />{d.time}</td>
+                  <td className="py-2.5 pr-3 text-stone-500">{d.stay}</td>
+                  <td className="py-2.5">{d.difficulty !== "–" ? <DifficultyBadge difficulty={d.difficulty} /> : "–"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === "gear" && (
+        <div className="bg-white rounded-xl border border-stone-200 p-5">
+          <div className="flex items-center justify-between mb-1">
+            <SectionTitle icon={Backpack}>Чеклист екипировка ({route.difficulty})</SectionTitle>
+            <button onClick={() => resetGear(route.id)} className="text-xs text-stone-400 hover:text-stone-600 flex items-center gap-1"><Trash2 size={12} /> Нулирай</button>
+          </div>
+          <div className="h-2 bg-stone-100 rounded-full overflow-hidden mb-4">
+            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${gearPct}%` }} />
+          </div>
+          <div className="text-xs text-stone-400 mb-3">{gearDone} / {gear.length} готово</div>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {gear.map((g) => {
+              const checked = !!gearState[g];
+              return (
+                <button
+                  key={g}
+                  onClick={() => toggleGear(route.id, g)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm text-left transition-colors ${
+                    checked ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-200 text-stone-600 hover:bg-stone-50"
+                  }`}
+                >
+                  {checked ? <CircleCheckBig size={16} className="text-emerald-600 shrink-0" /> : <Circle size={16} className="text-stone-300 shrink-0" />}
+                  {g}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab === "notes" && (
+        <div className="bg-white rounded-xl border border-stone-200 p-5">
+          <SectionTitle icon={StickyNote}>Лични бележки</SectionTitle>
+          <textarea
+            value={notes[route.id] || ""}
+            onChange={(e) => setNote(route.id, e.target.value)}
+            placeholder="Твоите бележки за този преход (пазят се за сесията)..."
+            className="w-full h-40 border border-stone-200 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-400 resize-none"
+          />
+          <button
+            onClick={() => onExportMarkdown(route)}
+            className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-stone-800 text-white text-sm font-bold hover:bg-stone-700"
+          >
+            {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Копирано!" : "Експорт в Markdown"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================================
+   AlmanacRouteView — simplified view for the 50 compact almanac routes
+   ========================================================================= */
+function AlmanacRouteView({
+  route, isFavorite, toggleFavorite, isCompleted, completedInfo, onOpenComplete,
+  gearState, toggleGear, resetGear, notes, setNote, onExportMarkdown, copied,
+  hutVerification, verifyHut,
+}) {
+  const [tab, setTab] = useState("overview");
+  const gear = gearListFor(route.difficulty);
+  const gearDone = gear.filter((g) => gearState[g]).length;
+  const gearPct = gear.length > 0 ? Math.round((gearDone / gear.length) * 100) : 0;
+  const verified = hutVerification[`${route.id}:${route.hutName}`] ?? route.verified;
+  const bgLink = `https://www.google.com/search?q=${encodeURIComponent(route.name + " " + route.region + " bgmountains.org GPS трак")}`;
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="rounded-2xl overflow-hidden shadow-md mb-5">
+        <div className="bg-gradient-to-br from-stone-700 via-stone-600 to-stone-500 p-6 text-white">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-stone-200/80 font-bold mb-1">
+                <MapPin size={12} /> {route.region} · Алманах
+              </div>
+              <h1 className="text-2xl font-extrabold tracking-tight">{route.name}</h1>
+            </div>
+            <button
+              onClick={() => toggleFavorite(route.id)}
+              aria-label={isFavorite ? "Премахни от любими" : "Добави в любими"}
+              className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors shrink-0"
+            >
+              <Heart size={16} className={isFavorite ? "text-rose-300" : "text-white/80"} fill={isFavorite ? "currentColor" : "none"} />
+            </button>
+          </div>
+          {isCompleted && (
+            <div className="mt-3 inline-flex items-center gap-1.5 bg-white/15 rounded-full px-3 py-1 text-xs font-semibold">
+              <CircleCheckBig size={13} /> Изминат на {completedInfo?.date} {completedInfo?.note ? `— ${completedInfo.note}` : ""}
+            </div>
+          )}
+        </div>
+        <div className="grid grid-cols-3 gap-px bg-stone-200">
+          <StatCard icon={Ruler} label="Дистанция" value={fmtKm(route.distanceKm)} />
+          <StatCard icon={TrendingUp} label="Изкачване" value={fmtM(route.gainM)} accent="bg-amber-50 text-amber-700" />
+          <StatCard icon={Gauge} label="Трудност" value={route.difficulty} accent="bg-rose-50 text-rose-700" />
+        </div>
+        <div className="bg-white px-4 py-2 flex items-center gap-2">
+          <a href={bgLink} target="_blank" rel="noreferrer" className="text-xs text-emerald-700 font-semibold flex items-center gap-1 hover:underline">
+            <ExternalLink size={12} /> GPS трак в bgmountains.org
+          </a>
+          <button onClick={() => onOpenComplete(route.id)} className="ml-auto text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1">
+            <CircleCheckBig size={13} /> {isCompleted ? "Редактирай" : "Маркирай като изминат"}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-1 mb-4 border-b border-stone-200">
+        {[
+          { id: "overview", label: "Преглед", icon: Gauge },
+          { id: "gear", label: "Екипировка", icon: Backpack },
+          { id: "notes", label: "Бележки", icon: StickyNote },
+        ].map((t) => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${
+                tab === t.id ? "border-emerald-600 text-emerald-700 bg-emerald-50/60" : "border-transparent text-stone-500 hover:text-stone-700"
+              }`}
+            >
+              <Icon size={14} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === "overview" && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={Calendar}>Дни по дни</SectionTitle>
+            <div className="space-y-2 text-sm">
+              <div className="flex gap-3 p-3 bg-stone-50 rounded-lg"><span className="font-bold text-stone-700 w-16 shrink-0">Ден 1</span><span className="text-stone-600">{route.day1}</span></div>
+              <div className="flex gap-3 p-3 bg-stone-50 rounded-lg"><span className="font-bold text-stone-700 w-16 shrink-0">Ден 2</span><span className="text-stone-600">{route.day2}</span></div>
+              <div className="flex gap-3 p-3 bg-emerald-50 rounded-lg"><span className="font-bold text-emerald-700 w-16 shrink-0">Прибиране</span><span className="text-emerald-800">{route.back}</span></div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={Home}>Хижа</SectionTitle>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="font-bold text-stone-800">{route.hutName}</div>
+                {route.hutPhone && <a href={`tel:${route.hutPhone.replace(/[^\d+]/g, "")}`} className="text-sm text-emerald-700 hover:underline flex items-center gap-1 mt-1">
+                  <Phone size={13} /> {route.hutPhone}
+                </a>}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${verified ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>
+                  {verified ? <CircleCheckBig size={12} /> : <Circle size={12} />} {verified ? "Потвърден" : "Непотвърден"}
+                </span>
+                {!verified && (
+                  <button onClick={() => verifyHut(route.id, route.hutName)} className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500">
+                    Верифицирай
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {(route.suitedFor || route.terrain || route.kmNote || route.assessment) && (
+            <div className="bg-white rounded-xl border border-stone-200 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <SectionTitle icon={Search}>Изследване &amp; анализ</SectionTitle>
+                {typeof route.practicalRank === "number" && (
+                  <span className="flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full shrink-0">
+                    <Award size={12} /> #{route.practicalRank} по практичност
+                  </span>
+                )}
+              </div>
+              <div className="space-y-3 text-sm">
+                {route.suitedFor && (
+                  <div className="flex gap-3">
+                    <span className="font-bold text-stone-500 w-28 shrink-0">Подходящ за</span>
+                    <span className="text-stone-700">{route.suitedFor}</span>
+                  </div>
+                )}
+                {route.fridayNight && (
+                  <div className="flex gap-3">
+                    <span className="font-bold text-stone-500 w-28 shrink-0 flex items-center gap-1"><Sunrise size={13} />Петък вечер</span>
+                    <span className="text-stone-700">{route.fridayNight}</span>
+                  </div>
+                )}
+                {route.terrain && (
+                  <div className="flex gap-3">
+                    <span className="font-bold text-stone-500 w-28 shrink-0">Терен</span>
+                    <span className="text-stone-700">{route.terrain}</span>
+                  </div>
+                )}
+                {route.kmNote && (
+                  <div className="bg-stone-50 rounded-lg p-3 text-stone-600 text-xs leading-relaxed flex gap-2">
+                    <Ruler size={13} className="shrink-0 mt-0.5 text-stone-400" /> {route.kmNote}
+                  </div>
+                )}
+                {route.assessment && (
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-emerald-800 text-sm font-medium flex gap-2">
+                    <Star size={14} className="shrink-0 mt-0.5 text-emerald-500" /> {route.assessment}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "gear" && (
+        <div className="bg-white rounded-xl border border-stone-200 p-5">
+          <div className="flex items-center justify-between mb-1">
+            <SectionTitle icon={Backpack}>Чеклист екипировка ({route.difficulty})</SectionTitle>
+            <button onClick={() => resetGear(route.id)} className="text-xs text-stone-400 hover:text-stone-600 flex items-center gap-1"><Trash2 size={12} /> Нулирай</button>
+          </div>
+          <div className="h-2 bg-stone-100 rounded-full overflow-hidden mb-4">
+            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${gearPct}%` }} />
+          </div>
+          <div className="text-xs text-stone-400 mb-3">{gearDone} / {gear.length} готово</div>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {gear.map((g) => {
+              const checked = !!gearState[g];
+              return (
+                <button
+                  key={g}
+                  onClick={() => toggleGear(route.id, g)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm text-left transition-colors ${
+                    checked ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-200 text-stone-600 hover:bg-stone-50"
+                  }`}
+                >
+                  {checked ? <CircleCheckBig size={16} className="text-emerald-600 shrink-0" /> : <Circle size={16} className="text-stone-300 shrink-0" />}
+                  {g}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab === "notes" && (
+        <div className="bg-white rounded-xl border border-stone-200 p-5">
+          <SectionTitle icon={StickyNote}>Лични бележки</SectionTitle>
+          <textarea
+            value={notes[route.id] || ""}
+            onChange={(e) => setNote(route.id, e.target.value)}
+            placeholder="Твоите бележки за този преход..."
+            className="w-full h-40 border border-stone-200 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-400 resize-none"
+          />
+          <button
+            onClick={() => onExportMarkdown(route)}
+            className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-stone-800 text-white text-sm font-bold hover:bg-stone-700"
+          >
+            {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Копирано!" : "Експорт в Markdown"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================================
+   CustomRouteView — for user-added blueprint routes
+   ========================================================================= */
+function CustomRouteView({ route, onDelete, onExportMarkdown, copied, notes, setNote }) {
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="rounded-2xl overflow-hidden shadow-md mb-5">
+        <div className="bg-gradient-to-br from-amber-700 via-amber-600 to-amber-500 p-6 text-white">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-amber-100/80 font-bold mb-1 flex items-center gap-1"><MapPin size={12}/>{route.region || "Без регион"} · Твой маршрут</div>
+              <h1 className="text-2xl font-extrabold tracking-tight">{route.name}</h1>
+            </div>
+            <button onClick={() => onDelete(route.id)} aria-label="Изтрий маршрут" className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center shrink-0">
+              <Trash2 size={16} />
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-px bg-stone-200">
+          <StatCard icon={Ruler} label="Дистанция" value={route.distanceKm ? `${route.distanceKm} км` : "–"} />
+          <StatCard icon={TrendingUp} label="Изкачване" value={route.gainM ? `+${route.gainM} м` : "–"} accent="bg-amber-50 text-amber-700" />
+          <StatCard icon={Gauge} label="Трудност" value={route.difficulty || "–"} accent="bg-rose-50 text-rose-700" />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="bg-white rounded-xl border border-stone-200 p-5">
+          <SectionTitle icon={Car}>Транспорт</SectionTitle>
+          <p className="text-sm text-stone-600 whitespace-pre-line">{route.transportNote || "Няма въведени данни."}</p>
+        </div>
+        {route.huts?.length > 0 && (
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={Home}>Хижи</SectionTitle>
+            <div className="space-y-2">
+              {route.huts.map((h, i) => (
+                <div key={i} className="flex items-center justify-between p-3 bg-stone-50 rounded-lg text-sm">
+                  <span className="font-semibold text-stone-700">{h.name}</span>
+                  {h.phone && <a href={`tel:${h.phone.replace(/[^\d+]/g, "")}`} className="text-emerald-700 hover:underline flex items-center gap-1"><Phone size={12}/>{h.phone}</a>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {route.days?.length > 0 && (
+          <div className="bg-white rounded-xl border border-stone-200 p-5">
+            <SectionTitle icon={Calendar}>Дни</SectionTitle>
+            <div className="space-y-2">
+              {route.days.map((d, i) => (
+                <div key={i} className="flex gap-3 p-3 bg-stone-50 rounded-lg text-sm">
+                  <span className="font-bold text-stone-700 shrink-0">Ден {i + 1}</span>
+                  <span className="text-stone-600">{d.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {route.risks && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900 flex gap-2">
+            <TriangleAlert size={16} className="shrink-0 mt-0.5" /> {route.risks}
+          </div>
+        )}
+        <div className="bg-white rounded-xl border border-stone-200 p-5">
+          <SectionTitle icon={StickyNote}>Бележки</SectionTitle>
+          <textarea
+            value={notes[route.id] || ""}
+            onChange={(e) => setNote(route.id, e.target.value)}
+            placeholder="Бележки..."
+            className="w-full h-32 border border-stone-200 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-400 resize-none"
+          />
+          <button onClick={() => onExportMarkdown(route)} className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-stone-800 text-white text-sm font-bold hover:bg-stone-700">
+            {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Копирано!" : "Експорт в Markdown"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   Modal shell
+   ========================================================================= */
+function ModalShell({ title, icon: Icon, onClose, children, wide }: any) {
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleEsc);
+    return () => document.removeEventListener("keydown", handleEsc);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        className={`bg-white rounded-2xl shadow-2xl w-full ${wide ? "max-w-2xl" : "max-w-md"} max-h-[85vh] overflow-y-auto`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 p-4 border-b border-stone-200 sticky top-0 bg-white z-10">
+          {Icon && <Icon size={18} className="text-emerald-600" />}
+          <h2 className="font-bold text-stone-800 flex-1">{title}</h2>
+          <button onClick={onClose} aria-label="Затвори" className="w-8 h-8 rounded-full hover:bg-stone-100 flex items-center justify-center text-stone-400">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   CompleteModal — mark a route as hiked, with date + note
+   ========================================================================= */
+function CompleteModal({ routeId, existing, onClose, onSave, onRemove }) {
+  const [date, setDate] = useState(existing?.date || todayISO());
+  const [note, setNote] = useState(existing?.note || "");
+  const today = todayISO();
+
+  return (
+    <ModalShell title="Маркирай като изминат" icon={CircleCheckBig} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label className="text-xs font-bold text-stone-600 mb-1 block">Дата на похода</label>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            max={today}
+            className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-bold text-stone-600 mb-1 block">Бележка (по избор)</label>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Как мина преходът? Условия, впечатления..."
+            className="w-full h-24 border border-stone-200 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-400 resize-none"
+          />
+        </div>
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={() => { onSave(routeId, { date, note }); onClose(); }}
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg text-sm"
+          >
+            Запази
+          </button>
+          {existing && (
+            <button
+              onClick={() => { onRemove(routeId); onClose(); }}
+              className="px-4 py-2.5 rounded-lg text-sm font-bold text-rose-600 border border-rose-200 hover:bg-rose-50"
+            >
+              Премахни
+            </button>
+          )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* =========================================================================
+   EmergencyModal
+   ========================================================================= */
+function EmergencyModal({ onClose }) {
+  return (
+    <ModalShell title="Спешни контакти в планината" icon={Siren} onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <a href={`tel:${EMERGENCY.national}`} className="flex-1 flex items-center justify-between bg-white rounded-lg border border-rose-100 p-3">
+              <span className="font-bold text-rose-700 text-sm">Национален номер за спешни случаи</span>
+              <span className="bg-rose-600 text-white px-3 py-1 rounded text-sm font-bold">{EMERGENCY.national}</span>
+            </a>
+            <a href={`tel:${EMERGENCY.pss}`} className="flex-1 flex items-center justify-between bg-white rounded-lg border border-rose-100 p-3">
+              <span className="font-bold text-rose-700 text-sm">Планинска спасителна служба (ПСС)</span>
+              <span className="bg-rose-600 text-white px-3 py-1 rounded text-sm font-bold">{EMERGENCY.pss}</span>
+            </a>
+          </div>
+          <div className="text-xs text-rose-700/70 mt-2">Резервен номер на ПСС: {EMERGENCY.pssAlt}</div>
+        </div>
+        <div>
+          <SectionTitle icon={Shield}>Процедура при инцидент</SectionTitle>
+          <ol className="space-y-2">
+            {EMERGENCY.steps.map((s, i) => (
+              <li key={i} className="flex gap-3 text-sm text-stone-700">
+                <span className="w-6 h-6 rounded-full bg-stone-100 text-stone-600 flex items-center justify-center text-xs font-bold shrink-0">{i + 1}</span>
+                {s}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* =========================================================================
+   ProfileModal
+   ========================================================================= */
+function ProfileModal({ onClose, completed, favorites, allRoutesById }: any) {
+  const completedList = Object.entries(completed).map(([id, info]: any) => ({ id, ...(info as any), route: allRoutesById[id] })).filter((c: any) => c.route);
+  const totalKm = completedList.reduce((sum, c) => sum + (c.route.distanceKm || 0), 0);
+  const totalGain = completedList.reduce((sum, c) => sum + (c.route.gainM || 0), 0);
+  const byDifficulty = completedList.reduce((acc, c) => {
+    const d = c.route.difficulty || "Друго";
+    acc[d] = (acc[d] || 0) + 1;
+    return acc;
+  }, {});
+  const goal = 20;
+  const pct = Math.min(100, Math.round((completedList.length / goal) * 100));
+
+  return (
+    <ModalShell title="Личен профил" icon={User} onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-emerald-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-extrabold text-emerald-700">{completedList.length}</div>
+            <div className="text-xs text-emerald-600 font-semibold mt-1">Изминати преходи</div>
+          </div>
+          <div className="bg-amber-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-extrabold text-amber-700">{totalKm}</div>
+            <div className="text-xs text-amber-600 font-semibold mt-1">Общо километри</div>
+          </div>
+          <div className="bg-sky-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-extrabold text-sky-700">{totalGain}</div>
+            <div className="text-xs text-sky-600 font-semibold mt-1">Метри изкачване</div>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between text-xs font-bold text-stone-500 mb-1">
+            <span>Годишна цел: {goal} прехода</span><span>{pct}%</span>
+          </div>
+          <div className="h-2.5 bg-stone-100 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+
+        {Object.keys(byDifficulty).length > 0 && (
+          <div>
+            <SectionTitle icon={Award}>По трудност</SectionTitle>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(byDifficulty).map(([d, count]: any) => (
+                <span key={d} className={`px-3 py-1 rounded-full text-xs font-bold ${diffStyle(d as any).bg} ${diffStyle(d as any).text}`}>{d}: {count}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <SectionTitle icon={Heart}>Любими ({favorites.length})</SectionTitle>
+          {favorites.length === 0 && <p className="text-sm text-stone-400 italic">Все още нямаш добавени любими маршрути.</p>}
+          <div className="space-y-1.5 max-h-40 overflow-y-auto">
+            {favorites.map((id) => allRoutesById[id] && (
+              <div key={id} className="flex items-center gap-2 text-sm bg-stone-50 rounded-lg px-3 py-2">
+                <Heart size={12} className="text-rose-400" fill="currentColor" /> {allRoutesById[id].name}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <SectionTitle icon={CircleCheckBig}>История на изминатите</SectionTitle>
+          {completedList.length === 0 && <p className="text-sm text-stone-400 italic">Все още нямаш маркирани изминати преходи.</p>}
+          <div className="space-y-1.5 max-h-52 overflow-y-auto">
+            {completedList.sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((c) => (
+              <div key={c.id} className="flex items-center justify-between text-sm bg-stone-50 rounded-lg px-3 py-2">
+                <span className="text-stone-700 font-medium truncate pr-2">{c.route.name}</span>
+                <span className="text-stone-400 text-xs shrink-0">{c.date}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* =========================================================================
+   AddForm — Blueprint Generator за нови маршрути
+   ========================================================================= */
+function AddForm({ onClose, onSave }) {
+  const [name, setName] = useState("");
+  const [region, setRegion] = useState("");
+  const [distanceKm, setDistanceKm] = useState("");
+  const [gainM, setGainM] = useState("");
+  const [difficulty, setDifficulty] = useState("Средна");
+  const [transportNote, setTransportNote] = useState("");
+  const [risks, setRisks] = useState("");
+  const [huts, setHuts] = useState([{ name: "", phone: "" }]);
+  const [days, setDays] = useState([{ text: "" }]);
+
+  const addHut = () => setHuts((h) => [...h, { name: "", phone: "" }]);
+  const removeHut = (i) => setHuts((h) => h.filter((_, idx) => idx !== i));
+  const updateHut = (i, field, val) => setHuts((h) => h.map((hh, idx) => (idx === i ? { ...hh, [field]: val } : hh)));
+
+  const addDay = () => setDays((d) => [...d, { text: "" }]);
+  const removeDay = (i) => setDays((d) => d.filter((_, idx) => idx !== i));
+  const updateDay = (i, val) => setDays((d) => d.map((dd, idx) => (idx === i ? { text: val } : dd)));
+
+  const canSave = name.trim().length > 0;
+
+  const handleSave = () => {
+    if (!canSave) return;
+    const id = `custom-${Date.now()}`;
+    onSave({
+      id,
+      kind: "custom",
+      name: name.trim(),
+      region: region.trim(),
+      distanceKm: distanceKm ? Number(distanceKm) : null,
+      gainM: gainM ? Number(gainM) : null,
+      difficulty,
+      transportNote: transportNote.trim(),
+      risks: risks.trim(),
+      huts: huts.filter((h) => h.name.trim()),
+      days: days.filter((d) => d.text.trim()),
+    });
+    onClose();
+  };
+
+  return (
+    <ModalShell title="Добави нов маршрут" icon={Plus} onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2">
+            <label className="text-xs font-bold text-stone-600 mb-1 block">Име на маршрута *</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. вр. Черни връх - панорама" className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-stone-600 mb-1 block">Регион / планина</label>
+            <input value={region} onChange={(e) => setRegion(e.target.value)} placeholder="напр. Витоша" className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-stone-600 mb-1 block">Трудност</label>
+            <select value={difficulty} onChange={(e) => setDifficulty(e.target.value)} className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400 bg-white">
+              {["Лесна", "Средна", "Средна/Висока", "Висока", "Екстремна"].map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-stone-600 mb-1 block">Дистанция (км)</label>
+            <input type="number" value={distanceKm} onChange={(e) => setDistanceKm(e.target.value)} placeholder="напр. 14" className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-stone-600 mb-1 block">Изкачване (м)</label>
+            <input type="number" value={gainM} onChange={(e) => setGainM(e.target.value)} placeholder="напр. 800" className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs font-bold text-stone-600 mb-1 block">Транспорт</label>
+          <textarea value={transportNote} onChange={(e) => setTransportNote(e.target.value)} placeholder="Как се стига до началото на маршрута..." className="w-full h-20 border border-stone-200 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-400 resize-none" />
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-bold text-stone-600">Хижи / контакти</label>
+            <button onClick={addHut} className="text-xs font-bold text-emerald-700 flex items-center gap-1"><Plus size={12} /> Добави</button>
+          </div>
+          <div className="space-y-2">
+            {huts.map((h, i) => (
+              <div key={i} className="flex gap-2">
+                <input value={h.name} onChange={(e) => updateHut(i, "name", e.target.value)} placeholder="Име на хижа" className="flex-1 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+                <input value={h.phone} onChange={(e) => updateHut(i, "phone", e.target.value)} placeholder="Телефон" className="w-36 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+                {huts.length > 1 && <button onClick={() => removeHut(i)} className="text-stone-400 hover:text-rose-500"><X size={16} /></button>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-bold text-stone-600">Дни</label>
+            <button onClick={addDay} className="text-xs font-bold text-emerald-700 flex items-center gap-1"><Plus size={12} /> Добави ден</button>
+          </div>
+          <div className="space-y-2">
+            {days.map((d, i) => (
+              <div key={i} className="flex gap-2">
+                <span className="w-14 shrink-0 text-xs font-bold text-stone-400 pt-2">Ден {i + 1}</span>
+                <input value={d.text} onChange={(e) => updateDay(i, e.target.value)} placeholder="Описание на деня..." className="flex-1 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400" />
+                {days.length > 1 && <button onClick={() => removeDay(i)} className="text-stone-400 hover:text-rose-500"><X size={16} /></button>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs font-bold text-stone-600 mb-1 block">Рискове / особености</label>
+          <textarea value={risks} onChange={(e) => setRisks(e.target.value)} placeholder="Опасни участъци, сезонни условия..." className="w-full h-20 border border-stone-200 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-400 resize-none" />
+        </div>
+
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-stone-200 disabled:text-stone-400 text-white font-bold py-2.5 rounded-lg text-sm transition-colors"
+          >
+            Запази маршрута
+          </button>
+          <button onClick={onClose} className="px-4 py-2.5 rounded-lg text-sm font-bold text-stone-500 border border-stone-200 hover:bg-stone-50">
+            Отказ
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* =========================================================================
+   ImportModal — paste external JSON (per PLANINA schema v1) and merge it in
+   ========================================================================= */
+function ImportModal({ onClose, onImport, seedIds, onExportBackup }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [preview, setPreview] = useState(null);
+
+  const handleValidate = () => {
+    setError("");
+    setPreview(null);
+    if (!text.trim()) {
+      setError("Постави JSON текст първо.");
+      return null;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e: any) {
+      setError(`Невалиден JSON: ${e.message}`);
+      return null;
+    }
+    // Support both backup objects and raw route arrays
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.schemaVersion !== undefined) {
+      // Backup object — extract routes + user data
+      const routes: any[] = [];
+      if (Array.isArray(parsed.importedRoutes)) routes.push(...parsed.importedRoutes);
+      if (Array.isArray(parsed.customRoutes)) routes.push(...parsed.customRoutes);
+      if (parsed.overrides && typeof parsed.overrides === "object") {
+        routes.push(...Object.values(parsed.overrides));
+      }
+      if (routes.length === 0) {
+        setError("Backup файлът не съдържа маршрути за импортиране.");
+        return null;
+      }
+      const invalid = routes.filter((o) => !o || typeof o !== "object" || !o.id || !o.name);
+      if (invalid.length > 0) {
+        setError(`${invalid.length} обект(а) нямат задължителните полета "id" и "name".`);
+        return null;
+      }
+      setPreview({ total: routes.length, updates: routes.filter((o) => seedIds.has(o.id)).length, additions: 0, arr: routes, isBackup: true, backupData: parsed });
+      return routes;
+    }
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    const invalid = arr.filter((o) => !o || typeof o !== "object" || !o.id || !o.name);
+    if (invalid.length > 0) {
+      setError(`${invalid.length} обект(а) нямат задължителните полета "id" и "name".`);
+      return null;
+    }
+    const updates = arr.filter((o) => seedIds.has(o.id)).length;
+    const additions = arr.length - updates;
+    setPreview({ total: arr.length, updates, additions, arr });
+    return arr;
+  };
+
+  const handleImportClick = () => {
+    const arr = preview?.arr || handleValidate();
+    if (!arr) return;
+    onImport(arr, (preview as any)?.backupData);
+    onClose();
+  };
+
+  return (
+    <ModalShell title="Импортирай данни (JSON)" icon={Copy} onClose={onClose} wide>
+      <div className="space-y-4">
+        <p className="text-sm text-stone-500 leading-relaxed">
+          Постави JSON масив от маршрути по схемата на ПЛАНИНА (виж <code className="bg-stone-100 px-1 rounded text-xs">planina-schema.md</code>). Маршрути с познато <code className="bg-stone-100 px-1 rounded text-xs">id</code> ще се обновят; нови ще се добавят в раздел „Внесени“.
+        </p>
+        <textarea
+          value={text}
+          onChange={(e) => { setText(e.target.value); setPreview(null); setError(""); }}
+          placeholder='[{"id":"vrah-vihren","name":"вр. Вихрен", "distanceKm": 13, ...}]'
+          className="w-full h-56 border border-stone-200 rounded-lg p-3 text-xs font-mono focus:outline-none focus:border-emerald-400 resize-none"
+        />
+        {error && (
+          <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-sm text-rose-700 flex gap-2">
+            <TriangleAlert size={15} className="shrink-0 mt-0.5" /> {error}
+          </div>
+        )}
+        {preview && !error && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-800">
+            Открити <strong>{preview.total}</strong> маршрут(а): <strong>{preview.updates}</strong> ще обновят съществуващи, <strong>{preview.additions}</strong> ще се добавят като нови.
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button onClick={handleValidate} className="px-4 py-2.5 rounded-lg text-sm font-bold text-stone-600 border border-stone-200 hover:bg-stone-50">
+            Провери
+          </button>
+          <button onClick={handleImportClick} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg text-sm">
+            Импортирай
+          </button>
+        </div>
+        <div className="border-t border-stone-100 pt-3">
+          <button onClick={onExportBackup} className="text-xs font-bold text-stone-500 hover:text-stone-700 flex items-center gap-1.5">
+            <ExternalLink size={12} /> Изтегли резервно копие (.json) на всички твои внесени данни и настройки
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* =========================================================================
+   Error Boundary — prevents full app crash on render errors
+   ========================================================================= */
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: any) {
+    console.error("PlananaApp error:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#f5f0e8] flex items-center justify-center p-8">
+          <div className="max-w-md text-center">
+            <div className="text-4xl mb-4">🏔️</div>
+            <h1 className="text-xl font-bold text-stone-800 mb-2">Нещо се обърка</h1>
+            <p className="text-sm text-stone-500 mb-4">{this.state.error?.message || "Възникна неочаквана грешка."}</p>
+            <button
+              onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold text-sm hover:bg-emerald-500"
+            >
+              Презареди приложението
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/* =========================================================================
+   Main App component
+   ========================================================================= */
+function PlananaApp() {
+  const [selectedId, setSelectedId] = useState(DETAILED_ROUTES[0].id);
+  const [search, setSearch] = useState("");
+  const [difficultyFilter, setDifficultyFilter] = useState("all");
+  const [sortMode, setSortMode] = useState("default");
+  const [collapsedRegions, setCollapsedRegions] = useState({});
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  const [transportModes, setTransportModes] = useState({});
+  const [hutVerification, setHutVerification] = useState({});
+  const [favorites, setFavorites] = useState([]);
+  const [completed, setCompleted] = useState({});
+  const [gearState, setGearState] = useState({});
+  const [notes, setNotes] = useState({});
+  const [customRoutes, setCustomRoutes] = useState([]);
+
+  const [overrides, setOverrides] = useState({});
+  const [importedRoutes, setImportedRoutes] = useState([]);
+  const [dataLoaded, setDataLoaded] = useState(false);
+
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [showEmergency, setShowEmergency] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [completeModalRouteId, setCompleteModalRouteId] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const seedIds = useMemo(() => {
+    const s = new Set();
+    DETAILED_ROUTES.forEach((r) => s.add(r.id));
+    Object.values(ALMANAC).forEach((list) => list.forEach((r) => s.add(r.id)));
+    return s;
+  }, []);
+
+  const mergedDetailed = useMemo(
+    () => DETAILED_ROUTES.map((r) => mergeRouteData(r, flattenResearch(overrides[r.id] || {}))),
+    [overrides]
+  );
+
+  const mergedAlmanac = useMemo(() => {
+    const out = {};
+    Object.entries(ALMANAC).forEach(([region, list]) => {
+      out[region] = list.map((r) => mergeRouteData(r, flattenResearch(overrides[r.id] || {})));
+    });
+    return out;
+  }, [overrides]);
+
+  /* ---- load persisted data from storage on first mount ---- */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await storageAdapter.get(STORAGE_KEY_OVERRIDES, false);
+        if (r?.value && !cancelled) setOverrides(JSON.parse(r.value));
+      } catch (e) { /* key not set yet */ }
+      try {
+        const r = await storageAdapter.get(STORAGE_KEY_IMPORTED, false);
+        if (r?.value && !cancelled) setImportedRoutes(JSON.parse(r.value));
+      } catch (e) { /* key not set yet */ }
+      try {
+        const r = await storageAdapter.get(STORAGE_KEY_USERDATA, false);
+        if (r?.value && !cancelled) {
+          const d = JSON.parse(r.value);
+          if (d.favorites) setFavorites(d.favorites);
+          if (d.completed) setCompleted(d.completed);
+          if (d.notes) setNotes(d.notes);
+          if (d.gearState) setGearState(d.gearState);
+          if (d.customRoutes) setCustomRoutes(d.customRoutes);
+          if (d.hutVerification) setHutVerification(d.hutVerification);
+        }
+      } catch (e) { /* key not set yet */ }
+      if (!cancelled) setDataLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  /* ---- persist personal progress/state after the initial load ---- */
+  useEffect(() => {
+    if (!dataLoaded) return;
+    const payload = JSON.stringify({ favorites, completed, notes, gearState, customRoutes, hutVerification });
+    storageAdapter.set(STORAGE_KEY_USERDATA, payload, false).catch(() => {});
+  }, [dataLoaded, favorites, completed, notes, gearState, customRoutes, hutVerification]);
+
+  const toggleRegion = (region) => setCollapsedRegions((c) => ({ ...c, [region]: !c[region] }));
+
+  const setTransportMode = useCallback((routeId, mode) => {
+    setTransportModes((m) => ({ ...m, [routeId]: mode }));
+  }, []);
+
+  const verifyHut = useCallback((routeId, hutName) => {
+    setHutVerification((v) => ({ ...v, [`${routeId}:${hutName}`]: true }));
+  }, []);
+
+  const toggleFavorite = useCallback((routeId) => {
+    setFavorites((f) => (f.includes(routeId) ? f.filter((id) => id !== routeId) : [...f, routeId]));
+  }, []);
+
+  const saveCompleted = useCallback((routeId, info) => {
+    setCompleted((c) => ({ ...c, [routeId]: info }));
+  }, []);
+  const removeCompleted = useCallback((routeId) => {
+    setCompleted((c) => {
+      const next = { ...c };
+      delete next[routeId];
+      return next;
+    });
+  }, []);
+
+  const toggleGear = useCallback((routeId, item) => {
+    setGearState((g) => {
+      const routeGear = { ...(g[routeId] || {}) };
+      routeGear[item] = !routeGear[item];
+      return { ...g, [routeId]: routeGear };
+    });
+  }, []);
+  const resetGear = useCallback((routeId) => {
+    setGearState((g) => ({ ...g, [routeId]: {} }));
+  }, []);
+
+  const setNote = useCallback((routeId, text) => {
+    setNotes((n) => ({ ...n, [routeId]: text }));
+  }, []);
+
+  const addCustomRoute = useCallback((route) => {
+    setCustomRoutes((c) => [...c, route]);
+    setSelectedId(route.id);
+  }, []);
+  const deleteCustomRoute = useCallback((routeId) => {
+    setCustomRoutes((c) => c.filter((r) => r.id !== routeId));
+    setImportedRoutes((imp) => imp.filter((r) => r.id !== routeId));
+    setSelectedId(DETAILED_ROUTES[0].id);
+  }, []);
+
+  const handleImport = useCallback((arr: any[], backup?: any) => {
+    // Full backup restore mode
+    if (backup && backup.schemaVersion !== undefined) {
+      if (backup.overrides) setOverrides(backup.overrides);
+      if (backup.importedRoutes) setImportedRoutes(backup.importedRoutes);
+      if (backup.customRoutes) setCustomRoutes(backup.customRoutes);
+      if (backup.favorites) setFavorites(backup.favorites);
+      if (backup.completed) setCompleted(backup.completed);
+      if (backup.notes) setNotes(backup.notes);
+      if (backup.gearState) setGearState(backup.gearState);
+      if (backup.hutVerification) setHutVerification(backup.hutVerification);
+      if (backup.overrides) storageAdapter.set(STORAGE_KEY_OVERRIDES, JSON.stringify(backup.overrides), false).catch(() => {});
+      if (backup.importedRoutes) storageAdapter.set(STORAGE_KEY_IMPORTED, JSON.stringify(backup.importedRoutes), false).catch(() => {});
+      return;
+    }
+    // Route-array import mode (existing behavior)
+    const newOverrides = { ...overrides };
+    const newImported = [...importedRoutes];
+    arr.forEach((raw) => {
+      if (seedIds.has(raw.id)) {
+        newOverrides[raw.id] = { ...(newOverrides[raw.id] || {}), ...raw };
+      } else {
+        const normalized = normalizeImportedRoute(raw);
+        const idx = newImported.findIndex((r) => r.id === raw.id);
+        if (idx >= 0) newImported[idx] = normalized; else newImported.push(normalized);
+      }
+    });
+    setOverrides(newOverrides);
+    setImportedRoutes(newImported);
+    storageAdapter.set(STORAGE_KEY_IMPORTED, JSON.stringify(newImported), false).catch(() => {});
+    storageAdapter.set(STORAGE_KEY_OVERRIDES, JSON.stringify(newOverrides), false).catch(() => {});
+  }, [overrides, importedRoutes, seedIds]);
+
+  const handleExportBackup = useCallback(() => {
+    const payload: BackupPayload = {
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      overrides, importedRoutes, customRoutes, favorites, completed, notes, gearState, hutVerification,
+    };
+    try {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `planina-backup-${todayISO()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    }
+  }, [overrides, importedRoutes, customRoutes, favorites, completed, notes, gearState, hutVerification]);
+
+  const handleExportMarkdown = useCallback((route) => {
+    let md;
+    if (route.kind === "detailed") md = buildMarkdownForDetailed(route);
+    else if (route.kind === "custom") md = buildMarkdownForCustom(route);
+    else md = buildMarkdownForAlmanac(route);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }).catch(() => {});
+    }
+  }, []);
+
+  const allRoutesById = useMemo(() => {
+    const map: any = {};
+    mergedDetailed.forEach((r: any) => { map[r.id] = r; });
+    Object.values(mergedAlmanac).forEach((list: any) => (list as any[]).forEach((r: any) => { map[r.id] = almanacToCommon(r); }));
+    customRoutes.forEach((r: any) => { map[r.id] = r; });
+    importedRoutes.forEach((r: any) => { map[r.id] = r; });
+    return map;
+  }, [mergedDetailed, mergedAlmanac, customRoutes, importedRoutes]);
+
+  const selectedRoute = allRoutesById[selectedId] || mergedDetailed[0];
+  const selectedRawAlmanac = useMemo(() => {
+    if ((selectedRoute as any).kind !== "almanac") return null;
+    for (const list of Object.values(mergedAlmanac)) {
+      const found = (list as any[]).find((r: any) => r.id === (selectedRoute as any).id);
+      if (found) return found;
+    }
+    return selectedRoute; // imported almanac-kind route already matches this shape
+  }, [selectedRoute, mergedAlmanac]);
+  const selectedCustom =
+    customRoutes.find((r) => r.id === selectedId) ||
+    (selectedRoute.kind === "custom" ? selectedRoute : null);
+
+  const completeModalRoute = completeModalRouteId ? allRoutesById[completeModalRouteId] : null;
+
+  return (
+    <div className="min-h-screen bg-[#f5f0e8] flex text-stone-900" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <Sidebar
+        detailedRoutes={mergedDetailed}
+        almanac={mergedAlmanac}
+        customRoutes={customRoutes}
+        importedRoutes={importedRoutes}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        search={search}
+        setSearch={setSearch}
+        favorites={favorites}
+        toggleFavorite={toggleFavorite}
+        completed={completed}
+        difficultyFilter={difficultyFilter}
+        setDifficultyFilter={setDifficultyFilter}
+        sortMode={sortMode}
+        setSortMode={setSortMode}
+        collapsedRegions={collapsedRegions}
+        toggleRegion={toggleRegion}
+        onOpenAddForm={() => setShowAddForm(true)}
+        onOpenEmergency={() => setShowEmergency(true)}
+        onOpenProfile={() => setShowProfile(true)}
+        onOpenImport={() => setShowImportModal(true)}
+        mobileOpen={mobileOpen}
+        setMobileOpen={setMobileOpen}
+      />
+
+      <div className="flex-1 min-w-0 flex flex-col">
+        <header className="lg:hidden sticky top-0 z-20 bg-[#0d2818] text-white flex items-center gap-2 px-4 py-3">
+          <button onClick={() => setMobileOpen(true)} className="text-emerald-200"><Menu size={22} /></button>
+          <Mountain size={18} className="text-emerald-300" />
+          <span className="font-bold">ПЛАНИНА</span>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+          {selectedRoute.kind === "detailed" && (
+            <DetailedRouteView
+              route={selectedRoute}
+              transportMode={transportModes[selectedRoute.id] || "car"}
+              setTransportMode={setTransportMode}
+              hutVerification={hutVerification}
+              verifyHut={verifyHut}
+              isFavorite={favorites.includes(selectedRoute.id)}
+              toggleFavorite={toggleFavorite}
+              isCompleted={!!completed[selectedRoute.id]}
+              completedInfo={completed[selectedRoute.id]}
+              onOpenComplete={setCompleteModalRouteId}
+              gearState={gearState[selectedRoute.id] || {}}
+              toggleGear={toggleGear}
+              resetGear={resetGear}
+              notes={notes}
+              setNote={setNote}
+              onExportMarkdown={handleExportMarkdown}
+              copied={copied}
+            />
+          )}
+          {selectedRoute.kind === "almanac" && selectedRawAlmanac && (
+            <AlmanacRouteView
+              route={selectedRawAlmanac}
+              isFavorite={favorites.includes(selectedRoute.id)}
+              toggleFavorite={toggleFavorite}
+              isCompleted={!!completed[selectedRoute.id]}
+              completedInfo={completed[selectedRoute.id]}
+              onOpenComplete={setCompleteModalRouteId}
+              gearState={gearState[selectedRoute.id] || {}}
+              toggleGear={toggleGear}
+              resetGear={resetGear}
+              notes={notes}
+              setNote={setNote}
+              onExportMarkdown={handleExportMarkdown}
+              copied={copied}
+              hutVerification={hutVerification}
+              verifyHut={verifyHut}
+            />
+          )}
+          {selectedRoute.kind === "custom" && selectedCustom && (
+            <CustomRouteView
+              route={selectedCustom}
+              onDelete={deleteCustomRoute}
+              onExportMarkdown={handleExportMarkdown}
+              copied={copied}
+              notes={notes}
+              setNote={setNote}
+            />
+          )}
+        </main>
+
+        <footer className="text-center text-[11px] text-stone-400 py-3 border-t border-stone-200/70">
+          🏔️ ПЛАНИНА — планировчик на планински преходи в България · {Object.values(ALMANAC).reduce((a, b) => a + b.length, 0) + DETAILED_ROUTES.length + customRoutes.length} маршрута
+        </footer>
+      </div>
+
+      {showAddForm && <AddForm onClose={() => setShowAddForm(false)} onSave={addCustomRoute} />}
+      {showEmergency && <EmergencyModal onClose={() => setShowEmergency(false)} />}
+      {showImportModal && (
+        <ImportModal
+          onClose={() => setShowImportModal(false)}
+          onImport={handleImport}
+          seedIds={seedIds}
+          onExportBackup={handleExportBackup}
+        />
+      )}
+      {showProfile && (
+        <ProfileModal
+          onClose={() => setShowProfile(false)}
+          completed={completed}
+          favorites={favorites}
+          allRoutesById={allRoutesById}
+        />
+      )}
+      {completeModalRouteId && (
+        <CompleteModal
+          routeId={completeModalRouteId}
+          existing={completed[completeModalRouteId]}
+          onClose={() => setCompleteModalRouteId(null)}
+          onSave={saveCompleted}
+          onRemove={removeCompleted}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function PlananaAppWithBoundary() {
+  return (
+    <ErrorBoundary>
+      <PlananaApp />
+    </ErrorBoundary>
+  );
+}
