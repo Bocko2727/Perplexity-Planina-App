@@ -29,6 +29,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAIAssistant } from "./hooks/useAIAssistant";
 import { ChatPanel } from "./components/ai/ChatPanel";
 import { TripPlannerModal } from "./components/trip-planner/TripPlannerModal";
+import { GpxImportModal } from "./components/gpx/GpxImportModal";
 
 /* =========================================================================
    Main App component
@@ -73,6 +74,7 @@ function PlananaApp() {
   const [copied, setCopied] = useState(false);
   const [tripPlannerOpen, setTripPlannerOpen] = useState(false);
   const [tripPlannerRouteId, setTripPlannerRouteId] = useState<string | undefined>();
+  const [gpxImportOpen, setGpxImportOpen] = useState(false);
 
   const { messages, isThinking, isOpen, setIsOpen, ask, clear, suggestions } = useAIAssistant();
 
@@ -312,6 +314,7 @@ function PlananaApp() {
         onOpenProfile={() => setShowProfile(true)}
         onOpenImport={() => setShowImportModal(true)}
         onOpenTripPlanner={() => openTripPlanner(undefined)}
+        onOpenGpxImport={() => { setGpxImportOpen(true); setMobileOpen(false); }}
         mobileOpen={mobileOpen}
         setMobileOpen={setMobileOpen}
       />
@@ -416,6 +419,8 @@ function PlananaApp() {
         routes={mergedDetailed}
         initialRouteId={tripPlannerRouteId}
       />
+
+      <GpxImportModal isOpen={gpxImportOpen} onClose={() => setGpxImportOpen(false)} />
 
       <button
         data-testid="button-ai-toggle"

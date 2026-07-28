@@ -10,6 +10,7 @@ import { fmtKm, fmtM, fmtLoss } from "../../lib/utils";
 import { DifficultyBadge } from "../ui/DifficultyBadge";
 import { StatCard } from "../ui/StatCard";
 import { SectionTitle } from "../ui/SectionTitle";
+import { GpxExportButton } from "../gpx/GpxExportButton";
 
 /* =========================================================================
    RouteView — detailed route (DETAILED_ROUTES entries)
@@ -95,6 +96,7 @@ export function DetailedRouteView({
                 <CalendarPlus size={13} /> Планирай
               </button>
             )}
+            <GpxExportButton route={route} />
             <button
               onClick={() => onOpenComplete(route.id)}
               className="text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1"
