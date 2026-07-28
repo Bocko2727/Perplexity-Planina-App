@@ -6,7 +6,7 @@ import { Mountain, Menu } from "lucide-react";
    Production build — single-file React SPA
    ========================================================================= */
 
-import type { BackupPayload } from "./types";
+import type { AlmanacRoute, BackupPayload } from "./types";
 import {
   SCHEMA_VERSION, STORAGE_KEY_OVERRIDES, STORAGE_KEY_IMPORTED, STORAGE_KEY_USERDATA
 } from "./data/constants";
@@ -24,13 +24,25 @@ import { DetailedRouteView } from "./components/routes/DetailedRouteView";
 import { AlmanacRouteView } from "./components/routes/AlmanacRouteView";
 import { CustomRouteView } from "./components/routes/CustomRouteView";
 
-import { DETAILED_ROUTES, ALMANAC } from "./data/routes";
+import { useDetailedRoutes, useAlmanacRoutes } from "./hooks/useRoutes";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 /* =========================================================================
    Main App component
    ========================================================================= */
 function PlananaApp() {
+  const { routes: DETAILED_ROUTES, loading: routesLoading } = useDetailedRoutes();
+  const { routes: almanacRoutes, loading: almanacLoading } = useAlmanacRoutes();
+
+  const ALMANAC = useMemo(() => {
+    const obj: Record<string, AlmanacRoute[]> = {};
+    for (const r of almanacRoutes) {
+      if (!obj[r.region]) obj[r.region] = [];
+      obj[r.region].push(r);
+    }
+    return obj;
+  }, [almanacRoutes]);
+
   const [selectedId, setSelectedId] = useState(DETAILED_ROUTES[0].id);
   const [search, setSearch] = useState("");
   const [difficultyFilter, setDifficultyFilter] = useState("all");
@@ -62,11 +74,11 @@ function PlananaApp() {
     DETAILED_ROUTES.forEach((r) => s.add(r.id));
     Object.values(ALMANAC).forEach((list) => list.forEach((r) => s.add(r.id)));
     return s;
-  }, []);
+  }, [DETAILED_ROUTES, ALMANAC]);
 
   const mergedDetailed = useMemo(
     () => DETAILED_ROUTES.map((r) => mergeRouteData(r, flattenResearch(overrides[r.id] || {}))),
-    [overrides]
+    [DETAILED_ROUTES, overrides]
   );
 
   const mergedAlmanac = useMemo(() => {
@@ -75,7 +87,7 @@ function PlananaApp() {
       out[region] = list.map((r) => mergeRouteData(r, flattenResearch(overrides[r.id] || {})));
     });
     return out;
-  }, [overrides]);
+  }, [ALMANAC, overrides]);
 
   /* ---- load persisted data from storage on first mount ---- */
   useEffect(() => {
@@ -161,7 +173,7 @@ function PlananaApp() {
     setCustomRoutes((c) => c.filter((r) => r.id !== routeId));
     setImportedRoutes((imp) => imp.filter((r) => r.id !== routeId));
     setSelectedId(DETAILED_ROUTES[0].id);
-  }, []);
+  }, [DETAILED_ROUTES]);
 
   const handleImport = useCallback((arr: any[], backup?: any) => {
     // Full backup restore mode
@@ -253,6 +265,15 @@ function PlananaApp() {
     (selectedRoute.kind === "custom" ? selectedRoute : null);
 
   const completeModalRoute = completeModalRouteId ? allRoutesById[completeModalRouteId] : null;
+
+  if (routesLoading || almanacLoading) {
+    return (
+      <div className="min-h-screen bg-[#f5f0e8] flex flex-col items-center justify-center gap-3 text-stone-700">
+        <div className="w-8 h-8 rounded-full border-2 border-stone-300 border-t-emerald-700 animate-spin" />
+        <div className="text-sm">Зареждане...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f5f0e8] flex text-stone-900" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
