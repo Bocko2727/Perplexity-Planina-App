@@ -21,17 +21,11 @@ function think(): Promise<void> {
 /** Call the LLM-powered Edge Function. Returns null on any failure. */
 async function askLLM(question: string): Promise<string | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-
     const res = await fetch(EDGE_FUNCTION_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
-      signal: controller.signal,
     });
-
-    clearTimeout(timeout);
 
     if (!res.ok) return null;
 
