@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { Mountain, Menu } from "lucide-react";
+import { Mountain, Menu, MessageCircle, X } from "lucide-react";
 
 /* =========================================================================
    ПЛАНИНА (PLANINA) — Планировчик на планински преходи в България
@@ -26,6 +26,8 @@ import { CustomRouteView } from "./components/routes/CustomRouteView";
 
 import { useDetailedRoutes, useAlmanacRoutes } from "./hooks/useRoutes";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { useAIAssistant } from "./hooks/useAIAssistant";
+import { ChatPanel } from "./components/ai/ChatPanel";
 
 /* =========================================================================
    Main App component
@@ -68,6 +70,8 @@ function PlananaApp() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [completeModalRouteId, setCompleteModalRouteId] = useState(null);
   const [copied, setCopied] = useState(false);
+
+  const { messages, isThinking, isOpen, setIsOpen, ask, clear, suggestions } = useAIAssistant();
 
   const seedIds = useMemo(() => {
     const s = new Set();
@@ -395,6 +399,25 @@ function PlananaApp() {
           onRemove={removeCompleted}
         />
       )}
+
+      <button
+        data-testid="button-ai-toggle"
+        onClick={() => setIsOpen(!isOpen)}
+        className="fixed bottom-6 right-6 z-40 bg-emerald-700 text-white rounded-full w-14 h-14 flex items-center justify-center shadow-lg hover:bg-emerald-800 transition-colors"
+        aria-label="AI Асистент"
+      >
+        {isOpen ? <X size={24} /> : <MessageCircle size={24} />}
+      </button>
+
+      <ChatPanel
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        messages={messages}
+        isThinking={isThinking}
+        onAsk={ask}
+        onClear={clear}
+        suggestions={suggestions}
+      />
     </div>
   );
 }
