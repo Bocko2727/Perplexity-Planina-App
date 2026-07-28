@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import {
   Mountain, Search, ChevronDown, ChevronRight, CircleCheckBig, Heart, Plus, X,
-  Copy, ArrowUpDown, User, Siren, Star
+  Copy, ArrowUpDown, User, Siren, Star, CalendarPlus
 } from "lucide-react";
 
 import { REGION_ORDER } from "../../data/regions";
@@ -14,7 +14,7 @@ export function Sidebar({
   search, setSearch, favorites, toggleFavorite, completed,
   difficultyFilter, setDifficultyFilter, sortMode, setSortMode,
   collapsedRegions, toggleRegion, onOpenAddForm, onOpenEmergency, onOpenProfile, onOpenImport,
-  mobileOpen, setMobileOpen,
+  onOpenTripPlanner, mobileOpen, setMobileOpen,
 }) {
   const q = search.trim().toLowerCase();
 
@@ -213,6 +213,9 @@ export function Sidebar({
         </div>
 
         <div className="p-3 border-t border-emerald-900/60 space-y-1.5">
+          <button onClick={onOpenTripPlanner} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-900/40 hover:bg-amber-900/70 text-sm font-semibold transition-colors text-amber-100">
+            <CalendarPlus size={15} /> Планирай преход
+          </button>
           <button onClick={onOpenProfile} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-900/40 hover:bg-emerald-900/70 text-sm font-semibold transition-colors">
             <User size={15} /> Личен профил
           </button>

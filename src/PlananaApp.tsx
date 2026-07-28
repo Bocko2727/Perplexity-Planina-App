@@ -28,6 +28,7 @@ import { useDetailedRoutes, useAlmanacRoutes } from "./hooks/useRoutes";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAIAssistant } from "./hooks/useAIAssistant";
 import { ChatPanel } from "./components/ai/ChatPanel";
+import { TripPlannerModal } from "./components/trip-planner/TripPlannerModal";
 
 /* =========================================================================
    Main App component
@@ -70,6 +71,8 @@ function PlananaApp() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [completeModalRouteId, setCompleteModalRouteId] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [tripPlannerOpen, setTripPlannerOpen] = useState(false);
+  const [tripPlannerRouteId, setTripPlannerRouteId] = useState<string | undefined>();
 
   const { messages, isThinking, isOpen, setIsOpen, ask, clear, suggestions } = useAIAssistant();
 
@@ -167,6 +170,11 @@ function PlananaApp() {
 
   const setNote = useCallback((routeId, text) => {
     setNotes((n) => ({ ...n, [routeId]: text }));
+  }, []);
+
+  const openTripPlanner = useCallback((routeId?: string) => {
+    setTripPlannerRouteId(routeId);
+    setTripPlannerOpen(true);
   }, []);
 
   const addCustomRoute = useCallback((route) => {
@@ -303,6 +311,7 @@ function PlananaApp() {
         onOpenEmergency={() => setShowEmergency(true)}
         onOpenProfile={() => setShowProfile(true)}
         onOpenImport={() => setShowImportModal(true)}
+        onOpenTripPlanner={() => openTripPlanner(undefined)}
         mobileOpen={mobileOpen}
         setMobileOpen={setMobileOpen}
       />
@@ -334,6 +343,7 @@ function PlananaApp() {
               setNote={setNote}
               onExportMarkdown={handleExportMarkdown}
               copied={copied}
+              onPlanTrip={openTripPlanner}
             />
           )}
           {selectedRoute.kind === "almanac" && selectedRawAlmanac && (
@@ -399,6 +409,13 @@ function PlananaApp() {
           onRemove={removeCompleted}
         />
       )}
+
+      <TripPlannerModal
+        isOpen={tripPlannerOpen}
+        onClose={() => setTripPlannerOpen(false)}
+        routes={mergedDetailed}
+        initialRouteId={tripPlannerRouteId}
+      />
 
       <button
         data-testid="button-ai-toggle"

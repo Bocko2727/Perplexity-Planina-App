@@ -2,7 +2,7 @@ import { useState } from "react";
 import {
   MapPin, Phone, TriangleAlert, CircleCheckBig, Circle, Car, Bus, TrainFront,
   Heart, Copy, Check, Trash2, Calendar, Clock, TrendingUp, TrendingDown, Ruler,
-  Gauge, Cloud, Shield, Backpack, StickyNote, Home, Hotel, ExternalLink
+  Gauge, Cloud, Shield, Backpack, StickyNote, Home, Hotel, ExternalLink, CalendarPlus
 } from "lucide-react";
 
 import { gearListFor } from "../../data/constants";
@@ -17,7 +17,7 @@ import { SectionTitle } from "../ui/SectionTitle";
 export function DetailedRouteView({
   route, transportMode, setTransportMode, hutVerification, verifyHut,
   isFavorite, toggleFavorite, isCompleted, completedInfo, onOpenComplete,
-  gearState, toggleGear, resetGear, notes, setNote, onExportMarkdown, copied,
+  gearState, toggleGear, resetGear, notes, setNote, onExportMarkdown, copied, onPlanTrip,
 }) {
   const [tab, setTab] = useState("overview");
   const tabs = [
@@ -86,12 +86,22 @@ export function DetailedRouteView({
           <DifficultyBadge difficulty={route.difficulty} />
           <span className="text-xs text-stone-400">·</span>
           <span className="text-xs text-stone-500">Сезон: {route.season}</span>
-          <button
-            onClick={() => onOpenComplete(route.id)}
-            className="ml-auto text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1"
-          >
-            <CircleCheckBig size={13} /> {isCompleted ? "Редактирай завършване" : "Маркирай като изминат"}
-          </button>
+          <div className="ml-auto flex items-center gap-3">
+            {onPlanTrip && (
+              <button
+                onClick={() => onPlanTrip(route.id)}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 flex items-center gap-1"
+              >
+                <CalendarPlus size={13} /> Планирай
+              </button>
+            )}
+            <button
+              onClick={() => onOpenComplete(route.id)}
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1"
+            >
+              <CircleCheckBig size={13} /> {isCompleted ? "Редактирай завършване" : "Маркирай като изминат"}
+            </button>
+          </div>
         </div>
       </div>
 
